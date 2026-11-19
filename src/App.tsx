@@ -32,8 +32,8 @@ const SUBTITULOS: Record<string, string> = {
 };
 
 /**
- * Link vindo do erp-vendas (botão "NFe"): #sso=<token de 5 min>&chave=<chave da nota>.
- * O token vira uma sessão normal e o hash sai da barra de endereço na hora.
+ * Link vindo de outro app (erp-vendas: menu "NFe" e botão "NFe" da venda): #sso=<token de 5 min>&chave=<chave da nota, opcional>.
+ * O token vira uma sessão normal, a tela abre em Envios e o hash sai da barra de endereço na hora.
  */
 function lerLink() {
   const h = new URLSearchParams(window.location.hash.slice(1));
@@ -69,7 +69,8 @@ export default function App() {
   // ---------------------------------------------------------------
   // Estado geral
   // ---------------------------------------------------------------
-  const [abaAtiva, setAbaAtiva] = useState(link.chave ? 'documentos' : 'painel');
+  // Aberto por outro app (link com sso e/ou chave): começa direto em Envios
+  const [abaAtiva, setAbaAtiva] = useState(link.sso || link.chave ? 'documentos' : 'painel');
   const [menuMobile, setMenuMobile] = useState(false);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [painel, setPainel] = useState<Painel | null>(null);
