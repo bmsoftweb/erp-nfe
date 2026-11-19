@@ -4,7 +4,7 @@ import * as api from '../services/api';
 import { DocumentoLista, Emitente, Meta } from '../types';
 import { Botao, Confirmacao, Etiqueta, Texto } from './ui';
 import { AvisoErro, AvisoSucesso } from './AvisoErro';
-import { AcaoGrade, ColunaGrade, Grade } from './Grade';
+import { AcaoGrade, ColunaGrade, Grade, SeparadorAcoes } from './Grade';
 import { PainelRespostas, useOperacao } from './PainelRespostas';
 import { CopiaNFe, EdicaoNFe, NovaNFeView } from './NovaNFeView';
 import { AMBIENTES, SITUACOES, formatarChave, formatarDataHora, formatarMoeda } from '../utils/formatters';
@@ -17,10 +17,13 @@ export const DocumentosView: React.FC<{
   meta: Meta | null;
   emitente: Emitente | null;
   onRecarregarPainel: () => void;
+  /** Nota a mostrar ao abrir (link "NFe" do erp-vendas): já buscada e selecionada */
+  chaveInicial?: string;
 }> = ({
   meta,
   emitente,
   onRecarregarPainel,
+  chaveInicial,
 }) => {
   const { retorno, erro, errosSchema, carregando, executar, setErro, falhar, fecharErro } = useOperacao();
 
@@ -227,14 +230,37 @@ export const DocumentosView: React.FC<{
         chave={(d) => d.id}
         ordemPadrao={{ campo: 'data_emissao', direcao: 'desc' }}
         recarregar={versao}
+        buscaInicial={chaveInicial}
+        selecionarInicial={chaveInicial ? (d) => d.chave === chaveInicial : undefined}
         rotuloVazio="Nenhum documento emitido"
         selecionada={selecionado}
         onSelecionar={setSelecionado}
         onDuploClique={(d) => podeEditar(d) && editar(d)}
         larguraAcoes={172}
+        acoesEmMenu
         acoes={(d) => (
           <>
             <AcaoGrade
+              nome="Transmitir para a SEFAZ"
+              titulo={podeTransmitir(d) ? 'Transmitir para a SEFAZ' : 'Só nota assinada ou rejeitada pode ser transmitida'}
+              icone={<Send className="w-3.5 h-3.5" />}
+              tom="verde"
+              onClick={() => setConfirmandoEnvio(d)}
+              desabilitado={!podeTransmitir(d)}
+            />
+            <AcaoGrade titulo="Imprimir DANFE" icone={<Printer className="w-3.5 h-3.5" />} onClick={() => imprimir(d)} />
+            <AcaoGrade
+              nome="Enviar por e-mail"
+              titulo={d.situacao === 'autorizada' ? 'Enviar por e-mail' : 'Só nota autorizada pode ser enviada por e-mail'}
+              icone={<Mail className="w-3.5 h-3.5" />}
+              onClick={() => setEnviandoEmail(d)}
+              desabilitado={d.situacao !== 'autorizada'}
+            />
+            <AcaoGrade titulo="Validar XML contra o schema" icone={<FileCheck2 className="w-3.5 h-3.5" />} onClick={() => validarSchema(d)} />
+            <AcaoGrade titulo="Validar assinatura digital" icone={<ShieldCheck className="w-3.5 h-3.5" />} onClick={() => validarAssinatura(d)} />
+            <SeparadorAcoes />
+            <AcaoGrade
+              nome="Editar"
               titulo={
                 podeEditar(d)
                   ? d.situacao === 'rejeitada'
@@ -246,22 +272,6 @@ export const DocumentosView: React.FC<{
               onClick={() => editar(d)}
               desabilitado={!podeEditar(d)}
             />
-            <AcaoGrade
-              titulo={podeTransmitir(d) ? 'Transmitir para a SEFAZ' : 'Só nota assinada ou rejeitada pode ser transmitida'}
-              icone={<Send className="w-3.5 h-3.5" />}
-              tom="verde"
-              onClick={() => setConfirmandoEnvio(d)}
-              desabilitado={!podeTransmitir(d)}
-            />
-            <AcaoGrade titulo="Imprimir DANFE" icone={<Printer className="w-3.5 h-3.5" />} onClick={() => imprimir(d)} />
-            <AcaoGrade
-              titulo={d.situacao === 'autorizada' ? 'Enviar por e-mail' : 'Só nota autorizada pode ser enviada por e-mail'}
-              icone={<Mail className="w-3.5 h-3.5" />}
-              onClick={() => setEnviandoEmail(d)}
-              desabilitado={d.situacao !== 'autorizada'}
-            />
-            <AcaoGrade titulo="Validar XML contra o schema" icone={<FileCheck2 className="w-3.5 h-3.5" />} onClick={() => validarSchema(d)} />
-            <AcaoGrade titulo="Validar assinatura digital" icone={<ShieldCheck className="w-3.5 h-3.5" />} onClick={() => validarAssinatura(d)} />
           </>
         )}
         botoes={

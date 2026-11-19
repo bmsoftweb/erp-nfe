@@ -1,6 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Inbox, Loader2, Menu, Search, X,
+  ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Eye, EyeOff, Inbox, Loader2, Menu,
+  MoreHorizontal, Search, X,
 } from 'lucide-react';
 import { ConsultaGrade, PaginaGrade } from '../services/api';
 import { LinhasGrade, ModoLargura, lerConfigLista, salvarConfigLista } from '../utils/configListas';
@@ -43,8 +45,10 @@ interface GradeProps<T> {
   ordemPadrao: { campo: string; direcao: 'asc' | 'desc' };
   /** Botões de cada linha, na coluna Ações fixa à direita (ícones com title) */
   acoes?: (linha: T) => React.ReactNode;
-  /** Largura da coluna Ações em px; o padrão do b2b é 96 (w-24) */
+  /** Largura da coluna Ações em px com os ícones soltos (mínimo 120); no menu "..." ela fica em 120 */
   larguraAcoes?: number;
+  /** Mais de 4 ações: sem escolha gravada, abre com elas no menu "..." (o olho do cabeçalho alterna) */
+  acoesEmMenu?: boolean;
   /** Botões da barra de ferramentas, depois da busca e do "N por página" */
   botoes?: React.ReactNode;
   selecionada?: T | null;
@@ -54,6 +58,10 @@ interface GradeProps<T> {
   recarregar?: number;
   rotuloVazio: string;
   onTotal?: (total: number) => void;
+  /** Busca já aplicada ao abrir (ex.: a chave vinda de um link do erp-vendas) */
+  buscaInicial?: string;
+  /** Na primeira carga, seleciona a linha que satisfaz (mostra o detalhe dela) */
+  selecionarInicial?: (linha: T) => boolean;
 }
 
 const ALINHAMENTO: Record<string, string> = {
@@ -78,6 +86,7 @@ export function Grade<T>({
   ordemPadrao,
   acoes,
   larguraAcoes = 96,
+  acoesEmMenu,
   botoes,
   selecionada,
   onSelecionar,
@@ -85,6 +94,8 @@ export function Grade<T>({
   recarregar = 0,
   rotuloVazio,
   onTotal,
+  buscaInicial = '',
+  selecionarInicial,
 }: GradeProps<T>) {
   // ------------------------------------------------------------------
   // Dados
@@ -94,8 +105,9 @@ export function Grade<T>({
   const [totalPaginas, setTotalPaginas] = useState(1);
   const [pagina, setPagina] = useState(1);
   const [porPagina, setPorPagina] = useState(25);
-  const [busca, setBusca] = useState('');
-  const [buscaDigitada, setBuscaDigitada] = useState('');
+  const [busca, setBusca] = useState(buscaInicial);
+  const [buscaDigitada, setBuscaDigitada] = useState(buscaInicial);
+  const selecionarInicialRef = useRef(selecionarInicial);
   const [ordem, setOrdemCampo] = useState(ordemPadrao.campo);
   const [direcao, setDirecao] = useState<'asc' | 'desc'>(ordemPadrao.direcao);
   const [carregando, setCarregando] = useState(true);
@@ -111,6 +123,9 @@ export function Grade<T>({
   const [grade, setGrade] = useState<LinhasGrade>('horizontais');
   const [comSobra, setComSobra] = useState(true);
   const [modoLargura, setModoLargura] = useState<ModoLargura>('manual');
+  /** Olho do cabeçalho Ações; undefined = regra (até 4 soltas, mais no menu). Gravado no "Salvar Configuração" */
+  const [acoesAbertasPref, setAcoesAbertasPref] = useState<boolean | undefined>();
+  const acoesAbertas = !acoesEmMenu || (acoesAbertasPref ?? false);
   const arrastando = useRef<string | null>(null);
   const tabelaRef = useRef<HTMLTableElement>(null);
 
@@ -136,6 +151,7 @@ export function Grade<T>({
       setGrade(cfg.grade || 'horizontais');
       setComSobra(cfg.sobra !== false);
       setModoLargura(cfg.modo || 'manual');
+      setAcoesAbertasPref(cfg.acoesAbertas);
     });
     return () => {
       vivo = false;
@@ -166,6 +182,11 @@ export function Grade<T>({
         const nova = resposta.data.find((l) => chave(l) === chave(atual));
         onSelecionar(nova ?? null);
       }
+      // Só na primeira carga: depois a seleção é do usuário
+      const inicial = selecionarInicialRef.current;
+      selecionarInicialRef.current = undefined;
+      const alvo = inicial && resposta.data.find(inicial);
+      if (alvo) onSelecionar?.(alvo);
     } catch (err: any) {
       setErro(err.message || 'Falha ao carregar os registros.');
       setLinhas([]);
@@ -317,6 +338,7 @@ export function Grade<T>({
         grade,
         sobra: comSobra,
         modo: modoLargura,
+        acoesAbertas: acoesAbertasPref,
       });
       setMensagem({ texto: 'Configuração salva.' });
     } catch (err: any) {
@@ -330,7 +352,8 @@ export function Grade<T>({
   // ------------------------------------------------------------------
   const primeiro = (pagina - 1) * porPagina + 1;
   const ultimo = Math.min(pagina * porPagina, total);
-  const estiloAcoes = { width: larguraAcoes, minWidth: larguraAcoes, maxWidth: larguraAcoes };
+  const wAcoes = acoesAbertas ? Math.max(120, larguraAcoes) : 120;
+  const estiloAcoes = { width: wAcoes, minWidth: wAcoes, maxWidth: wAcoes };
 
   /**
    * Com a tabela presa em 100%, alargar uma coluna quando não há mais sobra não tem
@@ -340,8 +363,8 @@ export function Grade<T>({
    */
   const larguraMinima = useMemo(() => {
     const definidas = colunas.reduce((soma, c) => soma + (larguras[c.nome] || 0), 0);
-    return definidas ? definidas + 30 + (acoes ? larguraAcoes : 0) : undefined;
-  }, [colunas, larguras, acoes, larguraAcoes]);
+    return definidas ? definidas + 30 + (acoes ? wAcoes : 0) : undefined;
+  }, [colunas, larguras, acoes, wAcoes]);
 
   /**
    * A coluna de sobra tem largura de 100%. Com espaço livre ela só fica com o resto,
@@ -554,12 +577,20 @@ export function Grade<T>({
               {/* Coluna de sobra: fica com o espaço livre, para o redimensionar funcionar com poucas colunas */}
               {mostrarSobra && <th className="w-full border-b border-stone-200 dark:border-stone-800" />}
 
-              {acoes && (
+              {acoesEmMenu && acoes && (
                 <th
                   style={estiloAcoes}
-                  className="sticky right-0 z-20 px-3 py-2.5 text-center font-semibold text-stone-600 dark:text-stone-300 border-b border-l border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-950"
+                  className="sticky right-0 z-20 px-3 py-2.5 text-center font-semibold text-stone-600 dark:text-stone-300 whitespace-nowrap border-b border-l border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-950"
                 >
                   Ações
+                  <button
+                    type="button"
+                    onClick={() => setAcoesAbertasPref(!acoesAbertas)}
+                    title={acoesAbertas ? 'Voltar as ações para o menu' : 'Mostrar todas as ações na coluna'}
+                    className="ml-1.5 p-0.5 rounded align-middle text-stone-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:text-blue-400 dark:hover:bg-blue-950/40 cursor-pointer"
+                  >
+                    {acoesAbertas ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
                 </th>
               )}
             </tr>
@@ -633,7 +664,9 @@ export function Grade<T>({
                       onClick={(e) => e.stopPropagation()}
                       onDoubleClick={(e) => e.stopPropagation()}
                     >
-                      <div className="inline-flex items-center gap-1">{acoes(linha)}</div>
+                      <div className="inline-flex items-center gap-1">
+                        {acoesAbertas ? acoes(linha) : <MenuAcoes>{acoes(linha)}</MenuAcoes>}
+                      </div>
                     </td>
                   )}
                 </tr>
@@ -670,14 +703,43 @@ export function Grade<T>({
   );
 }
 
-/** Botão de ícone da coluna Ações, no formato do b2b (p-1, cinza, cor no hover) */
+/** Dentro do menu "...": as ações viram itens (ícone e nome) em vez de ícones soltos */
+const EmMenu = createContext(false);
+
+const COR_ITEM = { azul: 'text-blue-600 dark:text-blue-400', vermelho: 'text-rose-600 dark:text-rose-400', verde: 'text-emerald-600 dark:text-emerald-400' };
+
+/**
+ * Ação de linha: ícone solto na coluna Ações (titulo no tooltip), ou item do MenuAcoes com
+ * ícone e nome (sem descrição). nome é o rótulo curto do menu; sem ele, vale o titulo.
+ */
 export const AcaoGrade: React.FC<{
   titulo: string;
+  nome?: string;
   onClick: () => void;
   icone: React.ReactNode;
   tom?: 'azul' | 'vermelho' | 'verde';
   desabilitado?: boolean;
-}> = ({ titulo, onClick, icone, tom = 'azul', desabilitado }) => {
+}> = ({ titulo, nome, onClick, icone, tom = 'azul', desabilitado }) => {
+  const emMenu = useContext(EmMenu);
+  if (emMenu) {
+    return (
+      <button
+        role="menuitem"
+        type="button"
+        disabled={desabilitado}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+      >
+        <span className={`shrink-0 ${COR_ITEM[tom]}`}>{icone}</span>
+        <span className={`text-xs font-medium whitespace-nowrap ${tom === 'vermelho' ? 'text-rose-700 dark:text-rose-400' : 'text-stone-800 dark:text-stone-100'}`}>
+          {nome || titulo}
+        </span>
+      </button>
+    );
+  }
   const hover: Record<string, string> = {
     azul: 'hover:text-blue-600 hover:bg-blue-50 dark:hover:text-blue-400 dark:hover:bg-blue-950/40',
     vermelho: 'hover:text-rose-600 hover:bg-rose-50 dark:hover:text-rose-400 dark:hover:bg-rose-950/40',
@@ -696,5 +758,78 @@ export const AcaoGrade: React.FC<{
     >
       {icone}
     </button>
+  );
+};
+
+/** Linha divisória antes de Editar/Excluir no menu "..." (com os ícones soltos não aparece) */
+export const SeparadorAcoes: React.FC = () =>
+  useContext(EmMenu) ? <div className="my-1 border-t border-stone-100 dark:border-stone-800" /> : null;
+
+/**
+ * Botão "..." da coluna Ações que abre as ações da linha num menu (modelo: MenuAcoes do erp-nfs).
+ * As ações ficam montadas depois da primeira abertura: o menu fecha ao escolher, mas o diálogo
+ * que a ação abriu continua aberto.
+ */
+const MenuAcoes: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const botao = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<React.CSSProperties | null>(null);
+  const [montado, setMontado] = useState(false);
+
+  useEffect(() => {
+    if (!pos) return;
+    const fechar = () => setPos(null);
+    const tecla = (e: KeyboardEvent) => e.key === 'Escape' && fechar();
+    document.addEventListener('mousedown', fechar);
+    document.addEventListener('scroll', fechar, true);
+    document.addEventListener('keydown', tecla);
+    return () => {
+      document.removeEventListener('mousedown', fechar);
+      document.removeEventListener('scroll', fechar, true);
+      document.removeEventListener('keydown', tecla);
+    };
+  }, [pos]);
+
+  const abrir = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (pos) return setPos(null);
+    const r = botao.current!.getBoundingClientRect();
+    // Perto do pé da tela, abre para cima
+    const vertical = r.bottom + 300 > window.innerHeight ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 };
+    setPos({ ...vertical, right: window.innerWidth - r.right });
+    setMontado(true);
+  };
+
+  return (
+    <>
+      <button
+        ref={botao}
+        type="button"
+        onClick={abrir}
+        title="Ações"
+        className={`p-1 rounded transition-colors cursor-pointer ${
+          pos
+            ? 'text-blue-600 bg-blue-50 dark:text-blue-400 dark:bg-blue-950/40'
+            : 'text-stone-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:text-blue-400 dark:hover:bg-blue-950/40'
+        }`}
+      >
+        <MoreHorizontal className="w-4 h-4" />
+      </button>
+      {montado &&
+        // No body: dentro da célula fixa da coluna Ações ficaria cortado; o span segura os cliques da linha
+        createPortal(
+          <span onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+            <div
+              role="menu"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClickCapture={() => setPos(null)}
+              style={pos ?? { display: 'none' }}
+              className="fixed z-[60] min-w-48 py-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-xl"
+            >
+              <EmMenu.Provider value={true}>{children}</EmMenu.Provider>
+            </div>
+          </span>,
+          document.body,
+        )}
+    </>
   );
 };

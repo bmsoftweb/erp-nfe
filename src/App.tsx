@@ -31,7 +31,19 @@ const SUBTITULOS: Record<string, string> = {
   log: 'Histórico de comunicação com a SEFAZ',
 };
 
+/**
+ * Link vindo do erp-vendas (botão "NFe"): #sso=<token de 5 min>&chave=<chave da nota>.
+ * O token vira uma sessão normal e o hash sai da barra de endereço na hora.
+ */
+function lerLink() {
+  const h = new URLSearchParams(window.location.hash.slice(1));
+  const link = { sso: h.get('sso'), chave: h.get('chave') || undefined };
+  if (link.sso || link.chave) window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  return link;
+}
+
 export default function App() {
+  const [link] = useState(lerLink);
   // ---------------------------------------------------------------
   // Tema
   // ---------------------------------------------------------------
@@ -52,11 +64,12 @@ export default function App() {
   const [emitente, setEmitente] = useState<Emitente | null>(sessaoSalva.empresa);
   /** Motivo mostrado na tela de login quando a sessão expira ou é revogada */
   const [avisoLogin, setAvisoLogin] = useState<string | null>(null);
+  const [entrandoPorLink, setEntrandoPorLink] = useState(!!link.sso);
 
   // ---------------------------------------------------------------
   // Estado geral
   // ---------------------------------------------------------------
-  const [abaAtiva, setAbaAtiva] = useState('painel');
+  const [abaAtiva, setAbaAtiva] = useState(link.chave ? 'documentos' : 'painel');
   const [menuMobile, setMenuMobile] = useState(false);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [painel, setPainel] = useState<Painel | null>(null);
@@ -103,6 +116,31 @@ export default function App() {
       setAvisoLogin(mensagem);
     });
   }, [sair]);
+
+  // Entrada pelo link do erp-vendas: troca o token curto por uma sessão (fica só nesta aba)
+  useEffect(() => {
+    if (!link.sso) return;
+    api.definirToken(link.sso);
+    api.renovarSessao()
+      .then((r) => {
+        api.definirToken(r.token);
+        limparConfigListas();
+        salvarSessao(r.usuario, r.empresa, r.token, false);
+        setUsuario(r.usuario);
+        setEmitente(r.empresa);
+      })
+      .catch((e) => {
+        // Link vencido ou usuário sem acesso: segue a sessão salva, se houver
+        api.definirToken(sessaoSalva.token);
+        setAvisoLogin(e.message);
+      })
+      .finally(() => setEntrandoPorLink(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (entrandoPorLink) {
+    return <div className="h-screen flex items-center justify-center text-sm text-stone-500 bg-stone-100/70 dark:bg-stone-950">Entrando…</div>;
+  }
 
   if (!usuario || !emitente) {
     return (
@@ -169,7 +207,7 @@ export default function App() {
           // As demais telas seguem o b2b admin: ocupam toda a área útil, chapadas, sem margem
           <main className="flex-1 flex flex-col overflow-y-auto min-h-0 bg-white dark:bg-stone-900">
             {abaAtiva === 'documentos' && (
-              <DocumentosView meta={meta} emitente={emitente} onRecarregarPainel={recarregar} />
+              <DocumentosView meta={meta} emitente={emitente} onRecarregarPainel={recarregar} chaveInicial={link.chave} />
             )}
             {abaAtiva === 'consultas' && (
               <ConsultasView meta={meta} ufPadrao={emitente.uf || 'SP'} />

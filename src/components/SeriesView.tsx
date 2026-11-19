@@ -171,6 +171,7 @@ export const SeriesView: React.FC = () => {
             <>
               <AcaoGrade titulo="Editar" icone={<Pencil className="w-3.5 h-3.5" />} onClick={() => abrir(s)} />
               <AcaoGrade
+                nome="Excluir"
                 titulo="Excluir (só série sem notas; a que já tem notas é desativada)"
                 icone={<Trash2 className="w-3.5 h-3.5" />}
                 tom="vermelho"

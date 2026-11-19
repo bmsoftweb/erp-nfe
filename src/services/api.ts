@@ -64,6 +64,10 @@ const post = <T>(rota: string, corpo?: any) =>
 export const entrar = (cnpj: string, usuario: string, senha: string) =>
   post<{ success: boolean; token: string; usuario: Usuario; empresa: Emitente }>('/login', { cnpj, usuario, senha });
 
+/** Troca o token atual (ex.: o de 5 min do link do erp-vendas) por uma sessão normal */
+export const renovarSessao = () =>
+  post<{ success: boolean; token: string; usuario: Usuario; empresa: Emitente }>('/sessao/renovar');
+
 export const buscarMeta = () => pedir<Meta>('/meta');
 export const buscarPainel = () => pedir<Painel>('/painel');
 export const buscarStatusBanco = () => pedir<StatusBanco>('/db/status');

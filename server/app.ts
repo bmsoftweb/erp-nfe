@@ -132,6 +132,23 @@ export function createApp() {
   // =========================================================================
   app.use('/api', exigirSessao);
 
+  // Troca um token válido por uma sessão normal (12 h). Usado pelo link "NFe" do erp-vendas,
+  // que traz um token de 5 min gerado com o mesmo SESSION_SECRET para o usuário logado lá.
+  app.post('/api/sessao/renovar', async (req: Request, res: Response) => {
+    try {
+      const u = req.usuario!;
+      const [empresas] = await pool.query<any[]>('SELECT * FROM nfe_empresas WHERE id = ? LIMIT 1', [u.empresaId]);
+      res.json({
+        success: true,
+        token: criarToken(u.id, u.empresaId),
+        usuario: { id: u.id, nome: u.nome, email: u.email, empresa_id: u.empresaId },
+        empresa: empresas[0],
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // =========================================================================
   // Painel
   // =========================================================================
