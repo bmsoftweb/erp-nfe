@@ -12,13 +12,13 @@ import forge from 'node-forge';
 import { CertificadoCarregado } from './certificado.js';
 import { Contexto } from './contexto.js';
 import { assinar, conferirAssinatura } from './assinatura.js';
-import { gerarNFe } from './gerarNFe.js';
+import { calcularNota, gerarNFe } from './gerarNFe.js';
 import { gerarDanfe } from './danfe.js';
 import { CONFIG_PADRAO } from '../config.js';
 import { chaveValida } from './chave.js';
 import { semDeclaracao } from './xml.js';
 import { montarEvento, montarInutilizacao, PedidoEvento, ufDaNota } from './operacoes.js';
-import { decidir, PRAZO_PROCESSANDO_S, situacaoPeloStatus, validarReferencia } from './concentrador.js';
+import { comModelo, decidir, exigirCSC, PRAZO_PROCESSANDO_S, situacaoPeloStatus, validarReferencia } from './concentrador.js';
 import {
   FalhaSchema, ResultadoValidacao, exigirValido, validarEvento, validarInutilizacao, validarNFe, validarQualquer,
 } from './validacao.js';
@@ -149,6 +149,13 @@ async function principal() {
     assert.strictEqual(gerada.totais.vProd, 100.5);
     assert.strictEqual(gerada.totais.vNF, 100.5);
     assert.ok(gerada.xml.includes(`Id="NFe${gerada.chave}"`));
+  });
+
+  await conferir('/api/calcular devolve os mesmos totais da nota gerada, sem número', () => {
+    const { ide: { numero: _n, ...ide }, ...resto } = documento as any;
+    const calculo = calcularNota(ctx, { ...resto, ide } as any);
+    assert.deepStrictEqual(calculo.totais, gerada.totais);
+    assert.strictEqual(calculo.calculados.length, (documento as any).itens.length);
   });
 
   await conferir('ordem dos grupos obrigatórios segue o schema', () => {
@@ -699,6 +706,23 @@ async function principal() {
     assert.strictEqual(decidir('enviada', 0), 'verificar');
     assert.strictEqual(decidir('autorizada', 0), 'devolver');
     for (const s of ['cancelada', 'denegada']) assert.strictEqual(decidir(s, 0), 'usada', s);
+  });
+
+  await conferir('concentrador: ide.modelo troca o modelo da configuração (55 ↔ 65)', async () => {
+    const c55 = contexto('55');
+    assert.strictEqual(comModelo(c55, undefined), c55, 'sem ide.modelo vale a configuração');
+    const c65 = comModelo(c55, '65');
+    assert.strictEqual(c65.config.geral.modeloDF, '65');
+    assert.strictEqual(c65.modelo, 'NFCe');
+    assert.strictEqual(c55.config.geral.modeloDF, '55', 'não pode alterar o contexto original');
+    const nfce = gerarNFe(c65, documento as any);
+    assert.strictEqual(nfce.chave.slice(20, 22), '65');
+    assert.ok(nfce.xml.includes('<mod>65</mod>') && nfce.xml.includes('<qrCode>'));
+    assert.strictEqual(comModelo(contexto('65'), 55).modelo, 'NFe');
+    assert.throws(() => comModelo(c55, '57'), /55 \(NF-e\) ou 65/);
+    assert.throws(() => exigirCSC({ ...c65.config, geral: { ...c65.config.geral, csc: '' } }), /CSC/);
+    assert.doesNotThrow(() => exigirCSC(c65.config));
+    assert.doesNotThrow(() => exigirCSC({ ...c55.config, geral: { ...c55.config.geral, csc: '' } }));
   });
 
   await conferir('concentrador: cStat do protocolo e da consulta viram a situação certa', async () => {

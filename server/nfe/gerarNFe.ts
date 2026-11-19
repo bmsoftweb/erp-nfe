@@ -1046,13 +1046,15 @@ function gerarIS(t: ImpostoItem['seletivo'], operacao: number, item: ItemNFe, v:
 // Geração
 // ---------------------------------------------------------------------------
 
-export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
+/**
+ * Indicadores da nota e impostos de cada item, sem número, chave nem XML. É o que o
+ * gerarNFe usa e o que a rota /api/calcular devolve: o cálculo é um só.
+ */
+export function calcularNota(ctx: Pick<Contexto, 'config' | 'emitente'>, doc: DocumentoNFe) {
   const emit = ctx.emitente;
   const cfg = ctx.config;
-  const modelo = cfg.geral.modeloDF;
-  const nfce = modelo === '65';
+  const nfce = cfg.geral.modeloDF === '65';
   const simples = [1, 2, 4].includes(Number(emit.crt));
-  const ambiente = cfg.webservice.ambiente;
   const semIE = emitenteSemIE(emit);
 
   if (!doc.itens?.length) throw new Error('A nota precisa de ao menos um item.');
@@ -1064,22 +1066,6 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
     );
   }
 
-  const emissao = dataDoDocumento(doc.ide.dataEmissao);
-  const tipoEmissao = doc.ide.tipoEmissao ?? (cfg.geral.formaEmissao === 1 ? 1 : cfg.geral.formaEmissao);
-
-  const { chave, codigoNumerico } = montarChave({
-    uf: emit.uf,
-    emissao,
-    cnpj: emit.cnpj,
-    modelo,
-    serie: doc.ide.serie,
-    numero: doc.ide.numero,
-    tipoEmissao,
-    codigoNumerico: doc.ide.codigoNumerico,
-  });
-
-  // Em homologação a razão social do destinatário é obrigatoriamente esta frase
-  const homologacao = ambiente === 2;
   const dest = doc.destinatario;
 
   // Indicadores calculados uma vez só: a regra abaixo e o XML usam os mesmos valores
@@ -1115,6 +1101,34 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
   if (totais.temServico && !inscricaoMunicipal) {
     throw new Error('Item de serviço (ISSQN) exige a inscrição municipal do emitente em Configurações › Geral.');
   }
+  return { calculados, totais, idDest, indFinal, indIEDest, inscricaoMunicipal };
+}
+
+export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
+  const emit = ctx.emitente;
+  const cfg = ctx.config;
+  const modelo = cfg.geral.modeloDF;
+  const nfce = modelo === '65';
+  const ambiente = cfg.webservice.ambiente;
+  const { calculados, totais, idDest, indFinal, indIEDest, inscricaoMunicipal } = calcularNota(ctx, doc);
+
+  const emissao = dataDoDocumento(doc.ide.dataEmissao);
+  const tipoEmissao = doc.ide.tipoEmissao ?? (cfg.geral.formaEmissao === 1 ? 1 : cfg.geral.formaEmissao);
+
+  const { chave, codigoNumerico } = montarChave({
+    uf: emit.uf,
+    emissao,
+    cnpj: emit.cnpj,
+    modelo,
+    serie: doc.ide.serie,
+    numero: doc.ide.numero,
+    tipoEmissao,
+    codigoNumerico: doc.ide.codigoNumerico,
+  });
+
+  // Em homologação a razão social do destinatário é obrigatoriamente esta frase
+  const homologacao = ambiente === 2;
+  const dest = doc.destinatario;
 
   // ----- ide -----
   const ide = grupoObrigatorio('ide',

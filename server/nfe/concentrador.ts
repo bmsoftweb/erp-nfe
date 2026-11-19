@@ -2,6 +2,30 @@
  * Regras do concentrador (doc/plano-concentrador.md, fase 2), sem banco nem SEFAZ,
  * para o autoteste conferir: é a parte que, se errar, gera nota duplicada.
  */
+import type { ConfigNFe } from '../config.js';
+
+/**
+ * `ide.modelo` do documento ('55' NF-e ou '65' NFC-e) no lugar do modelo da configuração,
+ * para a mesma empresa emitir os dois pelo concentrador. Sem ele, vale a configuração.
+ * Basta trocar no contexto: gerarNFe, URLs da SEFAZ, série e numeração leem dali.
+ */
+export function comModelo<T extends { config: ConfigNFe }>(ctx: T, modelo: unknown): T {
+  if (modelo === undefined || modelo === null || modelo === '') return ctx;
+  const m = String(modelo);
+  if (m !== '55' && m !== '65') throw new Error('ide.modelo deve ser 55 (NF-e) ou 65 (NFC-e).');
+  return {
+    ...ctx,
+    config: { ...ctx.config, geral: { ...ctx.config.geral, modeloDF: m } },
+    modelo: m === '65' ? 'NFCe' : 'NFe',
+  };
+}
+
+/** NFC-e sem CSC sai com o QR Code inválido: barra antes de reservar número */
+export function exigirCSC(config: ConfigNFe) {
+  if (config.geral.modeloDF === '65' && (!String(config.geral.idCSC || '').trim() || !String(config.geral.csc || '').trim())) {
+    throw new Error('NFC-e exige o CSC (identificador e código) em Configurações › Geral.');
+  }
+}
 
 /** Depois disso, uma nota "processando" é tratada como enviada sem resposta (o processo caiu) */
 export const PRAZO_PROCESSANDO_S = 120;

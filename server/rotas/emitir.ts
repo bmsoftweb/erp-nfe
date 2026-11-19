@@ -5,24 +5,28 @@
  * devolve a que existe ou continua de onde parou.
  *
  *   POST /api/emitir              { referencia, documento, sincrono?, transmitir? }
+ *                                 documento.ide.modelo: '55' ou '65' (sem ele, o da configuração)
  *                                 transmitir: false = numera, gera, assina e valida; a nota fica
  *                                 "assinada", pronta para o Enviar da tela (nada vai à SEFAZ)
  *   GET  /api/emitir/:referencia  situação, sem transmitir (consulta a SEFAZ se ficou sem resposta)
  *   GET  /api/emitir-pendentes    referências paradas sem autorização (números a inutilizar)
+ *   POST /api/calcular            { documento }: impostos por item e totais, sem número, sem
+ *                                 assinar e sem gravar nada (o pedido do erp-vendas)
  */
 import crypto from 'crypto';
 import { Router } from 'express';
 import type { PoolConnection } from 'mysql2/promise';
 import { pool } from '../db.js';
-import { Contexto, montarContexto } from '../nfe/contexto.js';
+import { carregarEmitente, Contexto, montarContexto } from '../nfe/contexto.js';
+import { lerConfig } from '../config.js';
 import { assinar } from '../nfe/assinatura.js';
-import { gerarNFe } from '../nfe/gerarNFe.js';
+import { calcularNota, gerarNFe } from '../nfe/gerarNFe.js';
 import { autorizar, consultarChave, consultarRecibo, montarProcNFe } from '../nfe/operacoes.js';
 import { exigirValido, validarNFe } from '../nfe/validacao.js';
 import { dataHoraMysql } from '../nfe/datas.js';
 import { semDeclaracao, valorTag } from '../nfe/xml.js';
 import { exigirSerie, reservarNumero } from '../nfe/numeracao.js';
-import { decidir, situacaoPeloStatus, validarReferencia } from '../nfe/concentrador.js';
+import { comModelo, decidir, exigirCSC, situacaoPeloStatus, validarReferencia } from '../nfe/concentrador.js';
 import { empresaDaRequisicao, rota } from './nfe.js';
 
 interface Linha {
@@ -246,6 +250,25 @@ async function gerarETransmitir(ctx: Contexto, l: Linha, documento: any, sincron
 export function criarRotasEmitir(): Router {
   const r = Router();
 
+  /** Mesmo motor do emitir, parado antes da chave: não usa certificado, número nem banco (só lê a configuração) */
+  r.post('/calcular', rota(async (req, res) => {
+    const empresaId = empresaDaRequisicao(req);
+    const documento = req.body?.documento;
+    if (!documento?.ide || !Array.isArray(documento.itens)) {
+      throw new Error('Informe os dados da nota: documento com ide e itens.');
+    }
+    const [config, emitente] = await Promise.all([lerConfig(empresaId), carregarEmitente(empresaId)]);
+    const ctx = comModelo({ config, emitente }, documento.ide.modelo);
+    const { calculados, totais, idDest, indFinal, indIEDest } = calcularNota(ctx, documento);
+    res.json({
+      success: true,
+      modelo: ctx.config.geral.modeloDF,
+      indicadores: { idDestino: idDest, consumidorFinal: indFinal, indIEDest: indIEDest ?? null },
+      itens: calculados.map((c, n) => ({ item: n + 1, ...c.valores })),
+      totais,
+    });
+  }));
+
   r.post('/emitir', rota(async (req, res) => {
     const empresaId = empresaDaRequisicao(req);
     const referencia = validarReferencia(req.body?.referencia);
@@ -255,9 +278,16 @@ export function criarRotasEmitir(): Router {
     }
     const sincrono = req.body?.sincrono !== false;
     const transmitir = req.body?.transmitir !== false;
-    const ctx = await montarContexto(empresaId);
+    let ctx = comModelo(await montarContexto(empresaId), documento.ide.modelo);
 
-    let l = (await buscar(empresaId, referencia)) || (await criar(ctx, referencia, documento));
+    const existente = await buscar(empresaId, referencia);
+    if (existente && documento.ide.modelo && String(documento.ide.modelo) !== existente.modelo) {
+      throw new Error(`A referência ${referencia} já é de uma nota modelo ${existente.modelo}. Use outra referência para o modelo ${documento.ide.modelo}.`);
+    }
+    // Nota que já existe segue no modelo dela, mesmo que a configuração tenha mudado
+    if (existente) ctx = comModelo(ctx, existente.modelo);
+    exigirCSC(ctx.config);
+    let l = existente || (await criar(ctx, referencia, documento));
     let acao = decidir(l.situacao, l.idade);
 
     if (acao === 'verificar') {
@@ -306,7 +336,7 @@ export function criarRotasEmitir(): Router {
     if (!l) return res.status(404).json({ success: false, error: `Nenhuma nota com a referência ${referencia}.` });
 
     if (decidir(l.situacao, l.idade) === 'verificar') {
-      const v = await verificar(await montarContexto(empresaId), l);
+      const v = await verificar(comModelo(await montarContexto(empresaId), l.modelo), l);
       if (v === 'nao_consta') {
         await atualizar(l.id, { situacao: 'rascunho', motivo: 'A nota não chegou à SEFAZ. Mande a mesma referência de novo.' });
       }

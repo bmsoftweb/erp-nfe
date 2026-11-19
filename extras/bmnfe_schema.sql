@@ -9,7 +9,7 @@
 -- Delphi (Frm_ACBrNFe) e é o tenant do sistema: tudo é isolado por ela.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_empresas (
-  id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id             BIGINT UNSIGNED NOT NULL COMMENT 'sys_empresas.id: extensão fiscal 1:1',
   cnpj           VARCHAR(14)  NOT NULL,
   inscricao_estadual VARCHAR(20) NULL,
   razao_social   VARCHAR(120) NOT NULL,
@@ -29,12 +29,13 @@ CREATE TABLE IF NOT EXISTS nfe_empresas (
   criado_em      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   atualizado_em  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_nfe_empresas_cnpj (cnpj)
+  UNIQUE KEY uq_nfe_empresas_cnpj (cnpj),
+  CONSTRAINT fk_nfe_empresas_sys FOREIGN KEY (id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nfe_usuarios (
   id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  empresa_id    INT UNSIGNED NOT NULL,
+  empresa_id    BIGINT UNSIGNED NOT NULL,
   nome          VARCHAR(80)  NOT NULL,
   email         VARCHAR(120) NOT NULL,
   senha_hash    VARCHAR(255) NOT NULL,
@@ -45,7 +46,7 @@ CREATE TABLE IF NOT EXISTS nfe_usuarios (
   criado_em     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_nfe_usuarios_email (empresa_id, email),
-  CONSTRAINT fk_nfe_usuarios_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_usuarios_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -55,11 +56,11 @@ CREATE TABLE IF NOT EXISTS nfe_usuarios (
 -- só geraria migração a cada ajuste.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_config (
-  empresa_id    INT UNSIGNED NOT NULL,
+  empresa_id    BIGINT UNSIGNED NOT NULL,
   dados         JSON         NOT NULL,
   atualizado_em DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (empresa_id),
-  CONSTRAINT fk_nfe_config_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_config_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS nfe_config (
 -- servidor não dependa de nada instalado na máquina.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_certificados (
-  empresa_id     INT UNSIGNED NOT NULL,
+  empresa_id     BIGINT UNSIGNED NOT NULL,
   nome_arquivo   VARCHAR(160) NOT NULL,
   arquivo        LONGBLOB     NOT NULL,
   senha          VARCHAR(255) NOT NULL,
@@ -79,7 +80,7 @@ CREATE TABLE IF NOT EXISTS nfe_certificados (
   valido_ate     DATETIME     NULL,
   atualizado_em  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (empresa_id),
-  CONSTRAINT fk_nfe_certificados_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_certificados_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -87,7 +88,7 @@ CREATE TABLE IF NOT EXISTS nfe_certificados (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_documentos (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  empresa_id     INT UNSIGNED NOT NULL,
+  empresa_id     BIGINT UNSIGNED NOT NULL,
   -- referência do módulo de origem no concentrador (POST /api/emitir); nula nas notas da tela
   referencia     VARCHAR(80)  NULL,
   chave          VARCHAR(44)  NULL,
@@ -115,21 +116,21 @@ CREATE TABLE IF NOT EXISTS nfe_documentos (
   UNIQUE KEY uq_nfe_documentos_numero (empresa_id, modelo, serie, ambiente, numero),
   UNIQUE KEY uq_nfe_documentos_referencia (empresa_id, referencia),
   KEY ix_nfe_documentos_situacao (empresa_id, situacao),
-  CONSTRAINT fk_nfe_documentos_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_documentos_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
 -- Contador de numeração por série (doc/plano-concentrador.md, fase 1)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_numeracao (
-  empresa_id     INT UNSIGNED NOT NULL,
+  empresa_id     BIGINT UNSIGNED NOT NULL,
   modelo         CHAR(2)      NOT NULL,
   serie          INT          NOT NULL,
   ambiente       TINYINT      NOT NULL,
   ultimo_numero  INT          NOT NULL,
   atualizado_em  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (empresa_id, modelo, serie, ambiente),
-  CONSTRAINT fk_nfe_numeracao_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_numeracao_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -138,7 +139,7 @@ CREATE TABLE IF NOT EXISTS nfe_numeracao (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_series (
   id                INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  empresa_id        INT UNSIGNED NOT NULL,
+  empresa_id        BIGINT UNSIGNED NOT NULL,
   modelo            CHAR(2)      NOT NULL,
   serie             INT          NOT NULL,
   descricao         VARCHAR(60)  NULL,
@@ -148,7 +149,7 @@ CREATE TABLE IF NOT EXISTS nfe_series (
   atualizado_em     DATETIME     NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_nfe_series (empresa_id, modelo, serie),
-  CONSTRAINT fk_nfe_series_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_series_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -156,7 +157,7 @@ CREATE TABLE IF NOT EXISTS nfe_series (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_eventos (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  empresa_id     INT UNSIGNED NOT NULL,
+  empresa_id     BIGINT UNSIGNED NOT NULL,
   chave          VARCHAR(44)  NOT NULL,
   tipo_evento    VARCHAR(6)   NOT NULL,
   descricao      VARCHAR(120) NULL,
@@ -172,7 +173,7 @@ CREATE TABLE IF NOT EXISTS nfe_eventos (
   criado_em      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_nfe_eventos_chave (empresa_id, chave, tipo_evento, sequencia),
-  CONSTRAINT fk_nfe_eventos_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_eventos_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -180,7 +181,7 @@ CREATE TABLE IF NOT EXISTS nfe_eventos (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_inutilizacoes (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  empresa_id     INT UNSIGNED NOT NULL,
+  empresa_id     BIGINT UNSIGNED NOT NULL,
   ano            SMALLINT     NOT NULL,
   modelo         CHAR(2)      NOT NULL DEFAULT '55',
   serie          INT          NOT NULL,
@@ -196,7 +197,7 @@ CREATE TABLE IF NOT EXISTS nfe_inutilizacoes (
   criado_em      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_nfe_inutilizacoes (empresa_id, ano, modelo, serie),
-  CONSTRAINT fk_nfe_inutilizacoes_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_inutilizacoes_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -204,7 +205,7 @@ CREATE TABLE IF NOT EXISTS nfe_inutilizacoes (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_distribuicao (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  empresa_id     INT UNSIGNED NOT NULL,
+  empresa_id     BIGINT UNSIGNED NOT NULL,
   nsu            VARCHAR(15)  NOT NULL,
   schema_doc     VARCHAR(60)  NULL,
   chave          VARCHAR(44)  NULL,
@@ -218,7 +219,7 @@ CREATE TABLE IF NOT EXISTS nfe_distribuicao (
   PRIMARY KEY (id),
   UNIQUE KEY uq_nfe_distribuicao_nsu (empresa_id, nsu),
   KEY ix_nfe_distribuicao_chave (empresa_id, chave),
-  CONSTRAINT fk_nfe_distribuicao_empresa FOREIGN KEY (empresa_id) REFERENCES nfe_empresas (id)
+  CONSTRAINT fk_nfe_distribuicao_empresa FOREIGN KEY (empresa_id) REFERENCES sys_empresas (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -226,7 +227,7 @@ CREATE TABLE IF NOT EXISTS nfe_distribuicao (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS nfe_log (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  empresa_id     INT UNSIGNED NOT NULL,
+  empresa_id     BIGINT UNSIGNED NOT NULL,
   operacao       VARCHAR(40)  NOT NULL,
   url            VARCHAR(255) NULL,
   chave          VARCHAR(44)  NULL,

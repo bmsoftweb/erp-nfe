@@ -119,6 +119,13 @@ Resposta (igual para a primeira chamada e para as repetidas):
 }
 ```
 
+`documento.ide.modelo` (`"55"` ou `"65"`) escolhe o modelo da nota; sem ele vale o
+`modeloDF` da configuração. A troca é feita só no contexto da requisição (`comModelo`
+em `server/nfe/concentrador.ts`): geração, URLs da SEFAZ, série e numeração leem
+dali. NFC-e sem CSC configurado é recusada antes de reservar número. A referência
+fica presa ao modelo da primeira nota: outro `ide.modelo` com a mesma referência é
+recusado.
+
 A `ide.serie` precisa estar cadastrada e ativa na tela Séries (tabela
 `nfe_series`, script `extras/2026-11-07_series.sql`); fora disso a chamada é
 recusada antes de reservar número. O formato do DANFE da série (retrato,
