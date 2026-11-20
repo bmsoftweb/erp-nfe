@@ -11,8 +11,8 @@ import assert from 'assert';
 import forge from 'node-forge';
 import { CertificadoCarregado } from './certificado.js';
 import { Contexto } from './contexto.js';
-import { assinar, conferirAssinatura } from './assinatura.js';
-import { calcularNota, gerarNFe } from './gerarNFe.js';
+import { assinar, assinarDocumentoSha256, conferirAssinatura } from './assinatura.js';
+import { calcularNota, gerarNFe, qrCodeComDigest } from './gerarNFe.js';
 import { gerarDanfe } from './danfe.js';
 import { CONFIG_PADRAO } from '../config.js';
 import { chaveValida } from './chave.js';
@@ -264,6 +264,38 @@ async function principal() {
     const nfce = gerarNFe(ctxNfce, documento as any);
     const nfceAssinada = assinar(semDeclaracao(nfce.xml), 'infNFe', `NFe${nfce.chave}`, ctxNfce.certificado);
     const r = await validarNFe(nfceAssinada);
+    assert.ok(r.valido, semErros(r));
+  });
+
+  await conferir('NFC-e do PAF em contingência (dhCont, obsFisco, intermediador, cartão, troco) passa no schema', async () => {
+    const ctxNfce = contexto('65');
+    const doc = {
+      ...documento,
+      ide: {
+        ...documento.ide, tipoEmissao: 9, versaoProcesso: 'BM-PDV 1.0.0',
+        dataContingencia: '2026-11-20 10:15:00', justificativaContingencia: 'Sem comunicacao com a SEFAZ autorizadora',
+        intermediador: { cnpj: '11222333000181', identificador: 'LOJA-123' },
+      },
+      // 100,50 de nota: 95,50 em dinheiro (5,00 de troco) + 10,00 no cartão
+      pagamentos: [
+        { forma: '01', valor: 95.5 },
+        { forma: '03', valor: 10, cnpjPagamento: '11222333000181', ufPagamento: 'SC', cartao: { integracao: 2, cnpj: '01027058000191', bandeira: '01', autorizacao: 'A1B2' } },
+      ],
+      troco: 5,
+      informacoesAdicionais: { obsFisco: [{ campo: 'PAF', texto: 'BM-PDV' }] },
+    };
+    const nfce = gerarNFe(ctxNfce, doc as any);
+    assert.strictEqual(nfce.chave[34], '9', 'a chave devia trazer tpEmis 9');
+    const assinada = qrCodeComDigest(ctxNfce, assinar(semDeclaracao(nfce.xml), 'infNFe', `NFe${nfce.chave}`, ctxNfce.certificado));
+    assert.ok(assinada.includes('<dhCont>2026-11-20T10:15:00-03:00</dhCont><xJust>'), 'faltou dhCont/xJust');
+    assert.ok(assinada.includes('<verProc>BM-PDV 1.0.0</verProc>'));
+    assert.ok(assinada.includes('<indIntermed>1</indIntermed>'));
+    assert.ok(assinada.includes('<obsFisco xCampo="PAF"><xTexto>BM-PDV</xTexto></obsFisco>'));
+    assert.ok(assinada.includes('<vTroco>5.00</vTroco></pag><infIntermed>'), 'vTroco e infIntermed fora do lugar');
+    const digest = (assinada.match(/<DigestValue>([^<]+)</) || [])[1];
+    assert.ok(assinada.includes(Buffer.from(digest, 'utf8').toString('hex')), 'o QR-Code offline precisa do digest');
+    assert.ok(conferirAssinatura(assinada).valida, 'trocar o QR-Code não pode invalidar a assinatura');
+    const r = await validarNFe(assinada);
     assert.ok(r.valido, semErros(r));
   });
 
@@ -657,6 +689,29 @@ async function principal() {
     assert.ok(m.mensagem.includes('<gPgto idTransacao="PIX-E2E-0001"><tpMeioPgto>03</tpMeioPgto>'), 'gPgto errado');
   });
 
+  await conferir('XML menuFiscal do PAF assinado com RSA-SHA256 confere', () => {
+    const xml = '<menuFiscal xmlns="http://www.sef.sc.gov.br/nfce"><arquivo nroArquivo="I" data="20112026" hora="101500" arqBD="Banco de dados na nuvem" arqSist="PAF-NFC-e Nuvem"><![CDATA[VTEwMTIz]]></arquivo></menuFiscal>';
+    const assinado = assinarDocumentoSha256(xml, ctx.certificado);
+    assert.ok(assinado.includes('xmldsig-more#rsa-sha256') && assinado.includes('xmlenc#sha256'), 'tem de ser SHA-256');
+    assert.ok(assinado.includes('<Reference URI="">'), 'a referência é o documento inteiro');
+    assert.ok(/<X509Certificate>[A-Za-z0-9+/=\s]+<\/X509Certificate>/.test(assinado), 'faltou o certificado no KeyInfo');
+    assert.ok(conferirAssinatura(assinado).valida, conferirAssinatura(assinado).erro);
+    assert.ok(!conferirAssinatura(assinado.replace('VTEwMTIz', 'VTEwMTIa')).valida, 'o arquivo adulterado não podia passar');
+  });
+
+  await conferir('evento 110750 conciliação financeira (EConf) passa nos dois schemas', async () => {
+    const m = montarEvento(ctx, {
+      chave: gerada.chave,
+      tipoEvento: '110750',
+      pagamentosEConf: [
+        { indPag: 0, tPag: '03', valor: 10, data: '2026-11-20', cnpjPagamento: '11222333000181', ufPagamento: 'SC', cnpjInstituicao: '01027058000191', bandeira: '01', autorizacao: 'A1B2' },
+        { tPag: '17', valor: 5.5, data: '2026-11-21', cnpjRecebedor: '05321136000117', ufRecebedor: 'SC' },
+      ],
+    });
+    const r = await validarEvento(m.mensagem, '110750');
+    assert.ok(r.valido, semErros(r));
+  });
+
   await conferir('evento 110001 cancela o 110300 e passa nos dois schemas', async () => {
     const m = montarEvento(ctx, {
       chave: gerada.chave,
@@ -722,6 +777,7 @@ async function principal() {
     assert.throws(() => comModelo(c55, '57'), /55 \(NF-e\) ou 65/);
     assert.throws(() => exigirCSC({ ...c65.config, geral: { ...c65.config.geral, csc: '' } }), /CSC/);
     assert.doesNotThrow(() => exigirCSC(c65.config));
+    assert.throws(() => exigirCSC({ ...c65.config, geral: { ...c65.config.geral, idCSC: '0b1c2d3e-aaaa-bbbb-cccc-0123456789ab' } }), /numérico/);
     assert.doesNotThrow(() => exigirCSC({ ...c55.config, geral: { ...c55.config.geral, csc: '' } }));
   });
 

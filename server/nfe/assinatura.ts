@@ -57,6 +57,29 @@ export function assinar(
   return sig.getSignedXml();
 }
 
+/**
+ * Assina o documento inteiro (Reference URI="") com RSA-SHA256 e digest SHA-256, enveloped
+ * + C14N, certificado em KeyInfo/X509Data: é o perfil do XML <menuFiscal> do PAF-NFC-e de SC
+ * (Requisito XII do Ato DIAT 54/2026), diferente do SHA-1 da NF-e.
+ */
+export function assinarDocumentoSha256(xml: string, cert: DadosAssinatura): string {
+  const sig = new SignedXml({
+    privateKey: cert.chavePrivadaPem,
+    publicCert: cert.certificadoPem,
+    signatureAlgorithm: 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256',
+    canonicalizationAlgorithm: C14N,
+  });
+  sig.addReference({
+    xpath: '/*',
+    transforms: [ENVELOPED, C14N],
+    digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256',
+    uri: '',
+    isEmptyUri: true,
+  });
+  sig.computeSignature(xml, { prefix: '', location: { reference: '/*', action: 'append' } });
+  return sig.getSignedXml();
+}
+
 /** Confere a assinatura de um XML já assinado (botão "Validar Assinatura" do exemplo) */
 export function conferirAssinatura(xml: string): { valida: boolean; erro?: string } {
   try {

@@ -18,6 +18,7 @@ import { dataHoraMysql, paraBR } from '../nfe/datas.js';
 import { recortarElemento, semDeclaracao, valorTag } from '../nfe/xml.js';
 import { FalhaSchema, exigirValido, validarNFe, validarQualquer } from '../nfe/validacao.js';
 import { exigirSerie, proximoNumero } from '../nfe/numeracao.js';
+import { comModelo } from '../nfe/concentrador.js';
 import { atualizarTabela, situacaoTabelas } from '../tabelas.js';
 import {
   autorizar,
@@ -428,7 +429,19 @@ export function criarRotasNFe(): Router {
   // =========================================================================
   r.post('/evento', rota(async (req, res) => {
     const empresaId = empresaDaRequisicao(req);
-    const ctx = await montarContexto(empresaId);
+    // Requisito III do PAF-NFC-e: nota em contingência só é cancelada depois de autorizada
+    if (['110111', '110112'].includes(String(req.body?.tipoEvento))) {
+      const [[doc]] = await pool.query<any[]>(
+        'SELECT situacao FROM nfe_documentos WHERE empresa_id = ? AND chave = ? LIMIT 1',
+        [empresaId, String(req.body?.chave || '').replace(/\D/g, '')],
+      );
+      if (doc?.situacao === 'contingencia') {
+        throw new Error('Esta NFC-e foi emitida em contingência e ainda não foi autorizada. O cancelamento só é possível depois da autorização.');
+      }
+    }
+    // O webservice de eventos da NFC-e é outro: o modelo vem da chave (posições 21-22), não da configuração
+    const chaveEvento = String(req.body?.chave || '').replace(/\D/g, '');
+    const ctx = comModelo(await montarContexto(empresaId), chaveEvento.length === 44 ? chaveEvento.slice(20, 22) : undefined);
     const ret = await enviarEvento(ctx, req.body || {});
 
     await pool.query(

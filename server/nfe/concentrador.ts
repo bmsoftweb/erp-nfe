@@ -25,6 +25,9 @@ export function exigirCSC(config: ConfigNFe) {
   if (config.geral.modeloDF === '65' && (!String(config.geral.idCSC || '').trim() || !String(config.geral.csc || '').trim())) {
     throw new Error('NFC-e exige o CSC (identificador e código) em Configurações › Geral.');
   }
+  if (config.geral.modeloDF === '65' && !/^\d{1,6}$/.test(String(config.geral.idCSC).trim())) {
+    throw new Error('O identificador do CSC deve ser numérico (ex.: 000001), em Configurações › Geral. Confira se o código do CSC não foi digitado no lugar do identificador.');
+  }
 }
 
 /** Depois disso, uma nota "processando" é tratada como enviada sem resposta (o processo caiu) */
@@ -54,6 +57,8 @@ export function decidir(situacao: string | undefined, idadeS: number): Acao {
     case 'enviada':
       return 'verificar';
     case 'autorizada':
+    // Em contingência o DANFE já saiu com esta chave: nunca gera de novo, a fila transmite
+    case 'contingencia':
       return 'devolver';
     default:
       return 'usada';

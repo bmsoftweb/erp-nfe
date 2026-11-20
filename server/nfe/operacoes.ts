@@ -98,6 +98,12 @@ async function transmitir(
         opcoes.versaoServico,
       );
 
+  // Teste 4 do roteiro do PAF-NFC-e (Ato DIAT 56/2026): PAF na nuvem simula no servidor a SEFAZ
+  // fora do ar. Só vale em homologação: em produção a chave é ignorada.
+  if (process.env.NFE_SIMULAR_SEFAZ_FORA === '1' && ambiente === 2) {
+    throw new Error('Simulação de SEFAZ indisponível (NFE_SIMULAR_SEFAZ_FORA): tempo de conexão esgotado.');
+  }
+
   const resposta = await enviarSoap({
     servico: resolvido,
     mensagem,
@@ -355,6 +361,21 @@ export interface PedidoEvento {
   };
   /** 110001: código do evento a cancelar; o protocolo dele vai em `protocolo` */
   eventoCancelado?: string;
+  /** 110750 (EConf): pagamentos recebidos, com a data (aaaa-mm-dd) e quem pagou/recebeu */
+  pagamentosEConf?: {
+    indPag?: number;
+    tPag: string;
+    descricao?: string;
+    valor: number;
+    data: string;
+    cnpjPagamento?: string;
+    ufPagamento?: string;
+    cnpjInstituicao?: string;
+    bandeira?: string;
+    autorizacao?: string;
+    cnpjRecebedor?: string;
+    ufRecebedor?: string;
+  }[];
   /** Campos livres de eventos que não têm campo dedicado (ex.: ator interessado) */
   extras?: Record<string, string>;
 }
@@ -390,6 +411,31 @@ function montarDetEvento(tipo: ReturnType<typeof acharTipoEvento>, p: PedidoEven
       tag('tpAutor', 1),
       tag('verAplic', 'BMNFe'),
     );
+  }
+
+  if (tipo.exigePagamentosEConf) {
+    const pags = p.pagamentosEConf || [];
+    if (!pags.length) throw new Error('Informe ao menos um pagamento a conciliar.');
+    partes.push(tag('verAplic', 'BMNFe'));
+    for (const g of pags) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(g.data || ''))) throw new Error('Informe a data de cada pagamento.');
+      const cnpj = (v?: string) => v?.replace(/\D/g, '') || undefined;
+      partes.push(grupoObrigatorio('detPag',
+        tag('indPag', g.indPag),
+        tag('tPag', String(g.tPag).padStart(2, '0')),
+        String(g.tPag) === '99' ? tag('xPag', limparTexto(g.descricao || 'Outros', 60)) : '',
+        tag('vPag', num(g.valor)),
+        tag('dPag', g.data),
+        cnpj(g.cnpjPagamento) && g.ufPagamento
+          ? tag('CNPJPag', cnpj(g.cnpjPagamento)) + tag('UFPag', g.ufPagamento.toUpperCase()) +
+            tag('CNPJIF', cnpj(g.cnpjInstituicao)) + tag('tBand', g.bandeira) +
+            tag('cAut', g.autorizacao ? limparTexto(g.autorizacao, 128) : undefined)
+          : '',
+        cnpj(g.cnpjRecebedor) && g.ufRecebedor
+          ? tag('CNPJReceb', cnpj(g.cnpjRecebedor)) + tag('UFReceb', g.ufRecebedor.toUpperCase())
+          : '',
+      ));
+    }
   }
 
   if (tipo.exigeDataPrevisao) {

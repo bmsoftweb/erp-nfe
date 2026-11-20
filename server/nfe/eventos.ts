@@ -25,6 +25,8 @@ export interface TipoEvento {
   exigeVinculoPagamento?: boolean;
   /** 110001: cancela outro evento, pelo tipo e protocolo dele */
   cancelaEvento?: boolean;
+  /** 110750: pede os pagamentos a conciliar (EConf) */
+  exigePagamentosEConf?: boolean;
 }
 
 export const TIPOS_EVENTO: TipoEvento[] = [
@@ -136,6 +138,14 @@ export const TIPOS_EVENTO: TipoEvento[] = [
     grupo: 'reforma',
     exigeProtocolo: true,
     exigeVinculoPagamento: true,
+  },
+  {
+    // Conciliação financeira (schema e110750): exigido do PAF-NFC-e de SC (Requisito XI, § 7º)
+    codigo: '110750',
+    descricao: 'Conciliação Financeira (EConf)',
+    descEvento: 'ECONF',
+    grupo: 'comuns',
+    exigePagamentosEConf: true,
   },
   {
     codigo: '110001',

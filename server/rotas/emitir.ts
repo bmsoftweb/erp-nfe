@@ -17,10 +17,10 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import type { PoolConnection } from 'mysql2/promise';
 import { pool } from '../db.js';
-import { carregarEmitente, Contexto, montarContexto } from '../nfe/contexto.js';
+import { carregarCertificado, carregarEmitente, Contexto, montarContexto } from '../nfe/contexto.js';
 import { lerConfig } from '../config.js';
-import { assinar } from '../nfe/assinatura.js';
-import { calcularNota, gerarNFe } from '../nfe/gerarNFe.js';
+import { assinar, assinarDocumentoSha256 } from '../nfe/assinatura.js';
+import { calcularNota, gerarNFe, qrCodeComDigest } from '../nfe/gerarNFe.js';
 import { autorizar, consultarChave, consultarRecibo, montarProcNFe } from '../nfe/operacoes.js';
 import { exigirValido, validarNFe } from '../nfe/validacao.js';
 import { dataHoraMysql } from '../nfe/datas.js';
@@ -179,11 +179,110 @@ async function verificar(ctx: Contexto, l: Linha): Promise<'resolvida' | 'nao_co
   }
 }
 
+// ---------------------------------------------------------------------------
+// Contingência offline da NFC-e (tpEmis 9) — Requisito III do PAF-NFC-e de SC
+// ---------------------------------------------------------------------------
+
+/** cStat de serviço fora do ar: a nota não foi processada e sai em contingência */
+const SEFAZ_PARADA = [108, 109];
+
+/**
+ * Entrada em contingência (dhCont): a emissão da primeira NFC-e em contingência ainda não
+ * autorizada. Sem nenhuma pendente, a contingência começa agora. Vale para todas as notas
+ * emitidas até o retorno à emissão normal (§ 1º do Requisito III).
+ */
+async function inicioContingencia(empresaId: number, ambiente: number): Promise<string | null> {
+  const [[r]] = await pool.query<any[]>(
+    `SELECT DATE_FORMAT(MIN(data_emissao), '%Y-%m-%d %H:%i:%s') AS inicio FROM nfe_documentos
+      WHERE empresa_id = ? AND modelo = '65' AND ambiente = ? AND situacao = 'contingencia'`,
+    [empresaId, ambiente],
+  );
+  return r?.inicio || null;
+}
+
+/**
+ * Gera de novo a mesma nota (mesmo número) com tpEmis 9, assina e grava como "contingencia".
+ * O XML volta para o PDV imprimir o DANFE; a transmissão fica para o transmitirContingencia.
+ * ponytail: se a tentativa normal tiver sido autorizada sem resposta, a de contingência
+ * volta com 539 na transmissão; aí vale a normal (guardada em dados.xmlNormal).
+ */
+async function emitirEmContingencia(ctx: Contexto, l: Linha, documento: any, numero: number, motivo: string, normal?: { chave: string; xml: string }) {
+  const inicio = (await inicioContingencia(ctx.empresaId, ctx.config.webservice.ambiente)) || dataHoraMysql();
+  const formatoImpressao = await exigirSerie({ empresaId: ctx.empresaId, modelo: l.modelo, serie: l.serie });
+  const doc = {
+    ...documento,
+    ide: {
+      ...documento.ide, serie: l.serie, numero, formatoImpressao, tipoEmissao: 9,
+      dataContingencia: inicio,
+      justificativaContingencia: documento.ide?.justificativaContingencia || 'Sem comunicacao com a SEFAZ autorizadora da NFC-e',
+    },
+  };
+  const gerada = gerarNFe(ctx, doc);
+  const xml = qrCodeComDigest(ctx, `<?xml version="1.0" encoding="UTF-8"?>` +
+    assinar(semDeclaracao(gerada.xml), 'infNFe', `NFe${gerada.chave}`, ctx.certificado));
+  exigirValido(await validarNFe(xml), `Falha na validação da NFC-e em contingência: ${numero}`, ctx.config.geral.exibirErroSchema);
+  await atualizar(l.id, {
+    situacao: 'contingencia', chave: gerada.chave, numero, xml, data_emissao: dataHoraMysql(),
+    recibo: null, protocolo: null, codigo_status: null, motivo: `Emitida em contingência: ${motivo}`.slice(0, 255),
+    dados: JSON.stringify({ ...doc, ...(normal && { chaveNormal: normal.chave, xmlNormal: normal.xml }) }),
+  });
+}
+
+/**
+ * Transmite as NFC-e em contingência da empresa, da mais antiga para a mais nova, sem
+ * gerar de novo (o DANFE já foi entregue com esta chave). Para na primeira sem resposta:
+ * a SEFAZ continua fora e as outras esperam a próxima rodada.
+ */
+async function transmitirContingencia(ctx: Contexto): Promise<{ transmitidas: number; pendentes: number; erro?: string }> {
+  const [linhas] = await pool.query<any[]>(
+    `SELECT id, referencia, chave, modelo, serie, numero, situacao, recibo, protocolo, codigo_status, motivo, xml,
+            xml_protocolo, dados, 0 AS idade
+       FROM nfe_documentos
+      WHERE empresa_id = ? AND modelo = '65' AND ambiente = ? AND situacao = 'contingencia'
+      ORDER BY data_emissao, id`,
+    [ctx.empresaId, ctx.config.webservice.ambiente],
+  );
+  let transmitidas = 0;
+  for (const l of linhas as (Linha & { dados: any })[]) {
+    let ret: Awaited<ReturnType<typeof autorizar>>;
+    try {
+      ret = await autorizar(ctx, l.xml!, { sincrono: true });
+    } catch (err) {
+      return { transmitidas, pendentes: linhas.length - transmitidas, erro: texto(err) };
+    }
+    const d = ret.dados || {};
+    if (SEFAZ_PARADA.includes(ret.cStat)) return { transmitidas, pendentes: linhas.length - transmitidas, erro: ret.xMotivo };
+    if (d.protNFe) {
+      const dados = typeof l.dados === 'string' ? JSON.parse(l.dados) : l.dados || {};
+      if (Number(d.cStatNota) === 539 && dados.chaveNormal && dados.xmlNormal) {
+        // A tentativa normal tinha sido autorizada: fica valendo ela
+        const c = await consultarChave(ctx, dados.chaveNormal);
+        if (c.dados?.protNFe) {
+          await atualizar(l.id, { chave: dados.chaveNormal, xml: dados.xmlNormal });
+          await aplicarProtocolo({ ...l, chave: dados.chaveNormal }, dados.xmlNormal, c.dados.protNFe, c.cStat, c.xMotivo);
+          transmitidas++;
+          continue;
+        }
+      }
+      await aplicarProtocolo(l, l.xml!, d.protNFe, d.cStatNota, d.motivoNota);
+    } else if (d.cStatNota === 204 || ret.cStat === 204) {
+      if ((await verificar(ctx, l)) !== 'resolvida') continue;
+    } else {
+      // Lote recusado: a nota segue em contingência com o motivo, para alguém olhar
+      await atualizar(l.id, { codigo_status: ret.cStat, motivo: ret.xMotivo.slice(0, 255) });
+      continue;
+    }
+    transmitidas++;
+  }
+  return { transmitidas, pendentes: linhas.length - transmitidas };
+}
+
 /**
  * Gera, assina, valida e transmite. A linha já está "processando" nas mãos desta chamada.
  * Sem transmitir, para depois de gravar o XML assinado e devolve os totais calculados.
+ * Com `contingencia`, a NFC-e que não chega à SEFAZ sai em contingência offline.
  */
-async function gerarETransmitir(ctx: Contexto, l: Linha, documento: any, sincrono: boolean, transmitir = true) {
+async function gerarETransmitir(ctx: Contexto, l: Linha, documento: any, sincrono: boolean, transmitir = true, contingencia = false) {
   // 539: o número foi usado na SEFAZ por outra chave; esta nota precisa de outro
   const numero = l.codigo_status === 539
     ? await reservarNumero({
@@ -223,11 +322,29 @@ async function gerarETransmitir(ctx: Contexto, l: Linha, documento: any, sincron
   }
   const enviada: Linha = { ...l, chave: gerada.chave, numero, xml, recibo: null };
 
+  const usaContingencia = contingencia && l.modelo === '65';
+  if (usaContingencia && (await inicioContingencia(ctx.empresaId, ctx.config.webservice.ambiente))) {
+    // Já em contingência: a fila vai primeiro; se ela não passar, esta também sai em contingência
+    const fila = await transmitirContingencia(ctx);
+    if (fila.pendentes) {
+      await emitirEmContingencia(ctx, l, documento, numero, fila.erro || 'SEFAZ indisponível');
+      return;
+    }
+  }
+
   let ret: Awaited<ReturnType<typeof autorizar>>;
   try {
     ret = await autorizar(ctx, xml, { sincrono });
   } catch (err) {
+    if (usaContingencia) {
+      await emitirEmContingencia(ctx, l, documento, numero, texto(err), { chave: gerada.chave, xml });
+      return;
+    }
     await atualizar(l.id, { situacao: 'enviada', motivo: `Sem resposta da SEFAZ: ${texto(err)}`.slice(0, 255) });
+    return;
+  }
+  if (usaContingencia && SEFAZ_PARADA.includes(ret.cStat)) {
+    await emitirEmContingencia(ctx, l, documento, numero, `${ret.cStat} - ${ret.xMotivo}`);
     return;
   }
 
@@ -278,6 +395,7 @@ export function criarRotasEmitir(): Router {
     }
     const sincrono = req.body?.sincrono !== false;
     const transmitir = req.body?.transmitir !== false;
+    const contingencia = req.body?.contingencia === true;
     let ctx = comModelo(await montarContexto(empresaId), documento.ide.modelo);
 
     const existente = await buscar(empresaId, referencia);
@@ -324,7 +442,7 @@ export function criarRotasEmitir(): Router {
       });
     }
 
-    const totais = await gerarETransmitir(ctx, l, documento, sincrono, transmitir);
+    const totais = await gerarETransmitir(ctx, l, documento, sincrono, transmitir, contingencia);
     l = (await buscar(empresaId, referencia))!;
     res.status(l.situacao === 'enviada' ? 202 : 200).json({ ...resposta(l), ...(totais && { totais }) });
   }));
@@ -343,6 +461,30 @@ export function criarRotasEmitir(): Router {
       l = (await buscar(empresaId, referencia))!;
     }
     res.status(['enviada', 'processando'].includes(l.situacao) ? 202 : 200).json(resposta(l));
+  }));
+
+  /**
+   * Transmite as NFC-e emitidas em contingência (Requisito III, II: automática e autônoma).
+   * O PDV chama a cada minuto enquanto houver pendentes; também roda antes de cada emissão.
+   */
+  r.post('/emitir-contingencia', rota(async (req, res) => {
+    const empresaId = empresaDaRequisicao(req);
+    const ctx = comModelo(await montarContexto(empresaId), '65');
+    res.json({ success: true, ...(await transmitirContingencia(ctx)) });
+  }));
+
+  /**
+   * Assina com o e-CNPJ do estabelecimento o XML <menuFiscal> gerado pelo Menu Fiscal do
+   * PAF-NFC-e (Requisito XII). Só aceita essa raiz: a rota não assina documento qualquer.
+   */
+  r.post('/assinar-menu-fiscal', rota(async (req, res) => {
+    const empresaId = empresaDaRequisicao(req);
+    const xml = String(req.body?.xml || '').replace(/^<\?xml[^>]*>\s*/, '');
+    if (!/^<menuFiscal xmlns="http:\/\/www\.sef\.sc\.gov\.br\/nfce">[\s\S]*<\/menuFiscal>$/.test(xml) || xml.includes('<Signature')) {
+      throw new Error('Mande o XML <menuFiscal xmlns="http://www.sef.sc.gov.br/nfce"> sem assinatura.');
+    }
+    const cert = await carregarCertificado(empresaId);
+    res.json({ success: true, xml: `<?xml version="1.0" encoding="UTF-8"?>${assinarDocumentoSha256(xml, cert)}` });
   }));
 
   /** Referências paradas sem autorização há N dias (padrão 7): números a inutilizar */

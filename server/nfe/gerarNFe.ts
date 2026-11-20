@@ -286,6 +286,18 @@ export interface Pagamento {
   /** 0=À vista, 1=A prazo */
   indPag?: number;
   descricao?: string;
+  /** CNPJ transacional do pagamento e a UF dele (CNPJPag/UFPag, YA03c/YA03d) */
+  cnpjPagamento?: string;
+  ufPagamento?: string;
+  /** Grupo card: cartão, Pix etc. pela credenciadora (CNPJ = intermediador do pagamento) */
+  cartao?: {
+    /** 1=Integrado (TEF), 2=Não integrado (POS) */
+    integracao: number;
+    cnpj?: string;
+    /** tBand: 01=Visa, 02=Mastercard ... 99=Outros */
+    bandeira?: string;
+    autorizacao?: string;
+  };
 }
 
 export interface DocumentoNFe {
@@ -312,6 +324,15 @@ export interface DocumentoNFe {
     codigoNumerico?: number;
     /** tpImp do modelo 55, vindo do cadastro da série: 1=Retrato, 2=Paisagem, 3=DANFE simplificado */
     formatoImpressao?: number;
+    /** verProc do aplicativo que originou a nota (o PAF-NFC-e manda a versão dele) */
+    versaoProcesso?: string;
+    /** Contingência: entrada nela (dhCont) e o motivo (xJust, 15 a 256 caracteres) */
+    dataContingencia?: string;
+    justificativaContingencia?: string;
+    /** indIntermed: 0=sem intermediador, 1=plataforma de terceiros (vai com o grupo infIntermed) */
+    indicadorIntermediador?: number;
+    /** infIntermed (YB): CNPJ da plataforma e a identificação do vendedor nela */
+    intermediador?: { cnpj: string; identificador: string };
   };
   destinatario?: Destinatario;
   itens: ItemNFe[];
@@ -323,6 +344,8 @@ export interface DocumentoNFe {
     volumes?: Volume[];
   };
   pagamentos?: Pagamento[];
+  /** vTroco: o que o cliente pagou acima do total (em dinheiro); o vPag leva o valor entregue */
+  troco?: number;
   /**
    * Vinculação com a transação de pagamento (gPgtoVinc, IT DFe 2026.001):
    * liga cada pagamento eletrônico da nota à transação na instituição financeira
@@ -339,7 +362,12 @@ export interface DocumentoNFe {
     /** CNPJ base (8 posições) da instituição financeira ou de pagamento */
     cnpjBasePSP: string;
   }[];
-  informacoesAdicionais?: { fisco?: string; contribuinte?: string };
+  informacoesAdicionais?: {
+    fisco?: string;
+    contribuinte?: string;
+    /** obsFisco (até 10): o PAF-NFC-e de SC manda xCampo "PAF" com o nome dele */
+    obsFisco?: { campo: string; texto: string }[];
+  };
   responsavelTecnico?: { cnpj: string; contato: string; email: string; fone: string; idCSRT?: string; csrt?: string };
 }
 
@@ -1151,8 +1179,13 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
     tag('finNFe', doc.ide.finalidade ?? 1),
     tag('indFinal', indFinal),
     tag('indPres', doc.ide.presencial ?? (nfce ? 1 : 0)),
+    tag('indIntermed', doc.ide.intermediador ? 1 : doc.ide.indicadorIntermediador),
     tag('procEmi', 0),
-    tag('verProc', 'BMNFe 0.1.0'),
+    tag('verProc', limparTexto(doc.ide.versaoProcesso || 'BMNFe 0.1.0', 20)),
+    tipoEmissao !== 1 && doc.ide.dataContingencia
+      ? tag('dhCont', dataHoraDFe(dataDoDocumento(doc.ide.dataContingencia))) +
+        tag('xJust', limparTexto(doc.ide.justificativaContingencia || 'Sem comunicacao com a SEFAZ autorizadora', 256))
+      : '',
   );
 
   // ----- emit -----
@@ -1387,10 +1420,30 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
           p.forma === '99' ? tag('xPag', limparTexto(p.descricao || 'Outros', 60)) : '',
           // Sem valor informado, o pagamento cobre a nota inteira ("90 — Sem pagamento" é sempre zero)
           tag('vPag', num(p.forma === '90' ? 0 : p.valor ?? totais.vNF)),
+          p.cnpjPagamento && p.ufPagamento
+            ? tag('CNPJPag', p.cnpjPagamento.replace(/\D/g, '')) + tag('UFPag', p.ufPagamento.toUpperCase())
+            : '',
+          p.cartao
+            ? grupoObrigatorio('card',
+                tag('tpIntegra', p.cartao.integracao),
+                tag('CNPJ', p.cartao.cnpj?.replace(/\D/g, '')),
+                tag('tBand', p.cartao.bandeira),
+                tag('cAut', p.cartao.autorizacao ? limparTexto(p.cartao.autorizacao, 128) : undefined),
+              )
+            : '',
         ),
       )
       .join(''),
+    doc.troco ? tag('vTroco', num(doc.troco)) : '',
   );
+
+  // Intermediador da transação (marketplace, delivery): irmão do pag, antes do gPgtoVinc
+  const infIntermed = doc.ide.intermediador
+    ? grupoObrigatorio('infIntermed',
+        tag('CNPJ', doc.ide.intermediador.cnpj.replace(/\D/g, '')),
+        tag('idCadIntTran', limparTexto(doc.ide.intermediador.identificador, 60)),
+      )
+    : '';
 
   // Vinculação com a transação de pagamento (IT DFe 2026.001): irmã do pag no infNFe
   const pgtoVinc = doc.vinculosPagamento?.length
@@ -1411,6 +1464,10 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
   const infAdic = grupo('infAdic',
     tag('infAdFisco', limparTexto(doc.informacoesAdicionais?.fisco || '', 2000)),
     tag('infCpl', limparTexto(doc.informacoesAdicionais?.contribuinte || '', 5000)),
+    (doc.informacoesAdicionais?.obsFisco || [])
+      .slice(0, 10)
+      .map((o) => `<obsFisco xCampo="${escapar(limparTexto(o.campo, 20))}">${tag('xTexto', limparTexto(o.texto, 60))}</obsFisco>`)
+      .join(''),
   );
 
   const g = ctx.config.geral;
@@ -1431,7 +1488,7 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
 
   const infNFe =
     `<infNFe versao="4.00" Id="NFe${chave}">` +
-    ide + emitente + destinatario + itens + total + transporte + pag + pgtoVinc + infAdic + infRespTec +
+    ide + emitente + destinatario + itens + total + transporte + pag + infIntermed + pgtoVinc + infAdic + infRespTec +
     '</infNFe>';
 
   // NFC-e leva o bloco suplementar com o QR-Code e a URL de consulta
@@ -1512,6 +1569,34 @@ function qrCode(
   const separador = urlBase.includes('?p=') ? '' : '?p=';
 
   return `${urlBase}${separador}${entrada}${idCSC}|${hash}`;
+}
+
+/**
+ * NFC-e em contingência offline (tpEmis 9): o QR-Code leva o digest da assinatura,
+ * que só existe depois de assinar. O infNFeSupl fica fora do infNFe assinado, então
+ * trocar o QR-Code aqui não invalida a assinatura. digVal = DigestValue em hexadecimal.
+ */
+export function qrCodeComDigest(ctx: Contexto, xmlAssinado: string): string {
+  const chave = (xmlAssinado.match(/Id="NFe(\d{44})"/) || [])[1];
+  const digest = (xmlAssinado.match(/<DigestValue>([^<]+)<\/DigestValue>/) || [])[1];
+  if (!chave || !digest || chave[34] !== '9') return xmlAssinado;
+
+  const cfg = ctx.config.geral;
+  const ambiente = ctx.config.webservice.ambiente;
+  const versao = versaoQRCode(ctx);
+  const urlBase = urlsConsulta('NFCe', ctx.emitente.uf, ambiente, versao).qrCode;
+  const idCSC = String(Number(cfg.idCSC || 0));
+  const dia = ((xmlAssinado.match(/<dhEmi>\d{4}-\d{2}-(\d{2})/) || [])[1]) || '';
+  const vNF = (xmlAssinado.match(/<vNF>([^<]+)<\/vNF>/) || [])[1] || '0.00';
+  const digVal = Buffer.from(digest, 'utf8').toString('hex');
+
+  const entrada = `${chave}|${versao}|${ambiente}|${dia}|${vNF}|${digVal}|`;
+  const hash = crypto.createHash('sha1').update(entrada + idCSC + cfg.csc, 'utf8').digest('hex').toUpperCase();
+  const separador = urlBase.includes('?p=') ? '' : '?p=';
+  return xmlAssinado.replace(
+    /<qrCode><!\[CDATA\[[\s\S]*?\]\]><\/qrCode>/,
+    `<qrCode><![CDATA[${urlBase}${separador}${entrada}${idCSC}|${hash}]]></qrCode>`,
+  );
 }
 
 export { somarTotais };
