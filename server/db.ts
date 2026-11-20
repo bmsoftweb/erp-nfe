@@ -32,13 +32,13 @@ export const MENSAGEM_CONFIG_FALTANDO =
   'Em execução local isso vem do arquivo .env; na Vercel, de Settings › Environment ' +
   'Variables (e o deploy precisa ser refeito depois de definí-las).';
 
-/** Tabelas criadas pelo extras/bmnfe_schema.sql */
+/** Tabelas criadas pelo extras/bmnfe_schema.sql (o certificado fica na do BM-Master) */
 export const DB_TABLES = [
   'nfe_empresas',
   'sys_usuarios',
   'sys_empresas',
   'nfe_config',
-  'nfe_certificados',
+  'sys_empresas_certificados',
   'nfe_documentos',
   'nfe_eventos',
   'nfe_inutilizacoes',

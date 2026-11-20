@@ -6,8 +6,7 @@
 import { Request, Response, Router } from 'express';
 import { pool } from '../db.js';
 import { CONFIG_PADRAO, ConfigNFe, gravarConfig, lerConfig, preservarSegredos, semSegredos } from '../config.js';
-import { carregarCertificado, esquecerCertificado, montarContexto, carregarEmitente } from '../nfe/contexto.js';
-import { carregarPfx } from '../nfe/certificado.js';
+import { carregarCertificado, montarContexto, carregarEmitente } from '../nfe/contexto.js';
 import { assinar, conferirAssinatura } from '../nfe/assinatura.js';
 import { gerarNFe } from '../nfe/gerarNFe.js';
 import { OpcoesDanfe, gerarDanfe } from '../nfe/danfe.js';
@@ -131,7 +130,7 @@ export function criarRotasNFe(): Router {
     let certificado: any = null;
     const [linhas] = await pool.query<any[]>(
       `SELECT nome_arquivo, cnpj, razao_social, numero_serie, emissor, valido_de, valido_ate, atualizado_em
-         FROM nfe_certificados WHERE empresa_id = ? LIMIT 1`,
+         FROM sys_empresas_certificados WHERE empresa_id = ? LIMIT 1`,
       [empresaId],
     );
     if (linhas.length) {
@@ -168,44 +167,8 @@ export function criarRotasNFe(): Router {
     res.json({ success: true, emitente: await carregarEmitente(empresaId) });
   }));
 
-  // =========================================================================
-  // Certificado
-  // =========================================================================
-  r.post('/certificado', rota(async (req, res) => {
-    const empresaId = empresaDaRequisicao(req);
-    const { arquivoBase64, nomeArquivo, senha } = req.body || {};
-    if (!arquivoBase64) throw new Error('Envie o arquivo .pfx do certificado.');
-    if (!senha) throw new Error('Informe a senha do certificado.');
-
-    const pfx = Buffer.from(String(arquivoBase64).replace(/^data:[^,]+,/, ''), 'base64');
-    // Falha aqui (senha errada, arquivo inválido) impede gravar lixo no banco
-    const { info } = carregarPfx(pfx, senha);
-
-    await pool.query(
-      `INSERT INTO nfe_certificados
-         (empresa_id, nome_arquivo, arquivo, senha, cnpj, razao_social, numero_serie, emissor, valido_de, valido_ate)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         nome_arquivo = VALUES(nome_arquivo), arquivo = VALUES(arquivo), senha = VALUES(senha),
-         cnpj = VALUES(cnpj), razao_social = VALUES(razao_social), numero_serie = VALUES(numero_serie),
-         emissor = VALUES(emissor), valido_de = VALUES(valido_de), valido_ate = VALUES(valido_ate)`,
-      [
-        empresaId, nomeArquivo || 'certificado.pfx', pfx, senha,
-        info.cnpj, info.razaoSocial, info.numeroSerie, info.emissor,
-        dataHoraMysql(info.validoDe), dataHoraMysql(info.validoAte),
-      ],
-    );
-
-    esquecerCertificado(empresaId);
-    res.json({ success: true, certificado: { ...info, validoDe: paraBR(info.validoDe, false), validoAte: paraBR(info.validoAte, false) } });
-  }));
-
-  r.delete('/certificado', rota(async (req, res) => {
-    const empresaId = empresaDaRequisicao(req);
-    await pool.query('DELETE FROM nfe_certificados WHERE empresa_id = ?', [empresaId]);
-    esquecerCertificado(empresaId);
-    res.json({ success: true });
-  }));
+  // O certificado (sys_empresas_certificados) é gravado e removido só no BM-Master:
+  // Grupos › Empresas › Configurações › Certificados. Aqui ele só é lido.
 
   // =========================================================================
   // Consultas

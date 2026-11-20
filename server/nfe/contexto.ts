@@ -44,19 +44,16 @@ export interface Contexto {
   modelo: ModeloDFe;
 }
 
+/** Cache pela data de atualização: um certificado novo gravado no BM-Master vale na próxima operação */
 const cacheCertificado = new Map<number, { atualizadoEm: string; cert: CertificadoCarregado }>();
-
-export function esquecerCertificado(empresaId: number) {
-  cacheCertificado.delete(empresaId);
-}
 
 export async function carregarCertificado(empresaId: number): Promise<CertificadoCarregado> {
   const [linhas] = await pool.query<any[]>(
-    'SELECT arquivo, senha, atualizado_em FROM nfe_certificados WHERE empresa_id = ? LIMIT 1',
+    'SELECT arquivo, senha, atualizado_em FROM sys_empresas_certificados WHERE empresa_id = ? LIMIT 1',
     [empresaId],
   );
   if (!linhas.length) {
-    throw new Error('Nenhum certificado digital cadastrado. Envie o arquivo .pfx em Configurações › Certificado.');
+    throw new Error('Nenhum certificado digital cadastrado. Grave o arquivo .pfx no BM-Master (Grupos › Empresas › Configurações).');
   }
 
   const { arquivo, senha, atualizado_em } = linhas[0];

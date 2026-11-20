@@ -104,7 +104,7 @@ São dois roteiros, sem rede e sem banco:
 
 | Formulário Delphi | Tela aqui |
 | --- | --- |
-| Configurações › Certificado | Configurações › Certificado (upload do `.pfx`, dados do titular, validade) |
+| Configurações › Certificado | Configurações › Certificado (dados do titular e validade; o `.pfx` é gravado no BM-Master, em `sys_empresas_certificados`) |
 | Configurações › Geral | Configurações › Geral (modelo, forma de emissão, CSC, CSRT, QR-Code) |
 | Configurações › WebService + Proxy + Retorno de Envio | Configurações › WebService |
 | Configurações › Emitente | Configurações › Emitente |
