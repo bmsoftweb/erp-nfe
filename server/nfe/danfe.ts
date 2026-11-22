@@ -89,6 +89,8 @@ export interface OpcoesDanfe {
   homologacao?: boolean;
   /** Formato atual da série (1 retrato, 2 paisagem, 3 simplificado); sem ele vale o tpImp do XML */
   formato?: number;
+  /** NFC-e: rodapé do caixa (o erp-pdv manda operador, número do caixa e versão) */
+  rodape?: { operador?: string; empresa?: number | string; caixa?: number | string; versao?: string };
 }
 
 /**
@@ -715,100 +717,183 @@ function desenharSimplificado(
 }
 
 // ---------------------------------------------------------------------------
-// DANFE NFC-e (bobina 80mm)
+// DANFE NFC-e (bobina 80mm): fonte monoespaçada em colunas, como o cupom da impressora térmica
 // ---------------------------------------------------------------------------
+
+/** tPag → nome na forma de pagamento */
+const FORMAS_PAGAMENTO: Record<string, string> = {
+  '01': 'Dinheiro', '02': 'Cheque', '03': 'Cartão de Crédito', '04': 'Cartão de Débito', '05': 'Cartão da Loja',
+  '10': 'Vale Alimentação', '11': 'Vale Refeição', '12': 'Vale Presente', '13': 'Vale Combustível',
+  '15': 'Boleto Bancário', '16': 'Depósito Bancário', '17': 'PIX', '18': 'Transferência Bancária', '19': 'Cashback',
+  '20': 'PIX', '21': 'Crédito em Loja', '22': 'Pagamento Eletrônico', '90': 'Sem Pagamento', '99': 'Outros',
+};
+
+/** CNPJ (também o alfanumérico) e CPF com máscara; o resto como veio */
+function documento(s: unknown): string {
+  const t = String(s ?? '');
+  if (t.length === 14) return t.replace(/^(.{2})(.{3})(.{3})(.{4})(.{2})$/, '$1.$2.$3/$4-$5');
+  if (t.length === 11) return t.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4');
+  return t;
+}
+
+function telefone(s: unknown): string {
+  const d = String(s ?? '').replace(/\D/g, '');
+  return d.length === 10 || d.length === 11 ? `(${d.slice(0, 2)}) ${d.slice(2, -4)}-${d.slice(-4)}` : d;
+}
+
+/** Courier: cada caractere tem 0,6 do tamanho; 6,3 pt estreitada a 80% (mesma altura) dá 68 colunas em 74 mm */
+const TAMANHO_BOBINA = 6.3;
+const ESCALA_BOBINA = 0.8;
 
 async function danfceBobina(inf: any, chave: string, xml: string, opcoes: OpcoesDanfe): Promise<Buffer> {
   const largura = 80 * MM;
-  const pdf = new PDFDocument({ size: [largura, 297 * MM], margin: 3 * MM });
+  const margem = 3 * MM;
+  const qr = valorTag(xml, 'qrCode');
+  // Sem QR-Code o cupom ainda sai, só perde a consulta pelo celular
+  const imagem = qr ? await qrcode(qr).catch(() => null) : null;
 
+  // A bobina tem a altura do conteúdo: a 1ª passada só mede, a 2ª desenha na página do tamanho certo
+  const rascunho = new PDFDocument({ size: [largura, 3000 * MM], margin: margem });
+  const fim = desenharBobina(rascunho, inf, chave, xml, opcoes, imagem);
+  rascunho.end();
+
+  const pdf = new PDFDocument({
+    size: [largura, fim + margem + 2],
+    margin: margem,
+    info: { Title: `NFC-e ${inf.ide?.nNF || ''}`, Author: inf.emit?.xNome || '' },
+  });
   const pedacos: Buffer[] = [];
   pdf.on('data', (d) => pedacos.push(d));
   const pronto = new Promise<Buffer>((resolve) => pdf.on('end', () => resolve(Buffer.concat(pedacos))));
+  desenharBobina(pdf, inf, chave, xml, opcoes, imagem);
+  pdf.end();
+  return pronto;
+}
 
-  const w = largura - 6 * MM;
-  const centro = { width: w, align: 'center' as const };
-  const ender = inf.emit?.enderEmit || {};
+/** Desenha o cupom e devolve onde ele termina */
+function desenharBobina(pdf: PDFKit.PDFDocument, inf: any, chave: string, xml: string, opcoes: OpcoesDanfe, imagem: Buffer | null): number {
+  const esq = pdf.page.margins.left;
+  const w = pdf.page.width - esq - pdf.page.margins.right;
+  const colunas = Math.floor(w / (TAMANHO_BOBINA * 0.6 * ESCALA_BOBINA));
+  let y = pdf.page.margins.top;
 
-  pdf.fontSize(8).font('Helvetica-Bold').text(inf.emit?.xNome || '', centro);
-  pdf.fontSize(6).font('Helvetica').text(
-    `CNPJ ${inf.emit?.CNPJ || ''}\n${ender.xLgr || ''}, ${ender.nro || ''} - ${ender.xBairro || ''}\n${ender.xMun || ''}/${ender.UF || ''}`,
-    centro,
-  );
-  pdf.moveDown(0.4);
-  pdf.fontSize(7).font('Helvetica-Bold').text('DANFE NFC-e - Documento Auxiliar da NFC-e', centro);
-  pdf.moveDown(0.3);
+  const fonte = (negrito = false, cor = '#000') => pdf.font(negrito ? 'Courier-Bold' : 'Courier').fontSize(TAMANHO_BOBINA).fillColor(cor);
+  /** Escreve com a letra estreita: a largura é a da área ocupada no papel */
+  const escrever = (s: string, x: number, topo: number, largura: number, o: PDFKit.Mixins.TextOptions = {}) => {
+    pdf.save().scale(ESCALA_BOBINA, 1, { origin: [x, topo] });
+    pdf.text(s, x, topo, { ...o, width: largura / ESCALA_BOBINA });
+    pdf.restore();
+  };
+  /** Texto na largura toda, quebrando linha */
+  const texto = (s: string, o: { negrito?: boolean; centro?: boolean; cor?: string } = {}) => {
+    fonte(o.negrito, o.cor);
+    escrever(s, esq, y, w, { align: o.centro ? 'center' : 'left' });
+    y = pdf.y;
+  };
+  /** Uma linha só: texto à esquerda (cortado no que sobra) e texto à direita */
+  const linha = (esquerda: string, direita = '', negrito = false) => {
+    const resto = colunas - direita.length - (direita ? 1 : 0);
+    fonte(negrito);
+    escrever(esquerda.slice(0, resto).padEnd(resto + (direita ? 1 : 0)) + direita, esq, y, w, { lineBreak: false });
+    y += pdf.currentLineHeight(true);
+  };
+  const tracos = () => linha('-'.repeat(colunas));
 
-  pdf.fontSize(6).font('Helvetica-Bold').text('CÓD   DESCRIÇÃO                QTD   UN   VL UN   TOTAL', { width: w });
-  pdf.font('Helvetica');
-
-  for (const det of comoLista(inf.det)) {
-    const p = det.prod || {};
-    pdf.fontSize(6).text(
-      `${p.cProd} ${p.xProd}`.slice(0, 46) +
-        `\n     ${moeda(p.qCom, 3)} ${p.uCom} x ${moeda(p.vUnCom)} = ${moeda(p.vProd)}`,
-      { width: w },
-    );
-  }
-
+  const emit = inf.emit || {};
+  const ender = emit.enderEmit || {};
+  const ide = inf.ide || {};
   const tot = inf.total?.ICMSTot || {};
-  pdf.moveDown(0.3);
-  pdf.fontSize(7).font('Helvetica-Bold').text(`TOTAL R$ ${moeda(tot.vNF)}`, { width: w, align: 'right' });
+  const itens = comoLista<any>(inf.det);
+  const protocolo = valorTag(xml, 'nProt');
 
-  for (const pagamento of comoLista(inf.pag?.detPag)) {
-    pdf.fontSize(6).font('Helvetica').text(`Pagamento ${pagamento.tPag}: ${moeda(pagamento.vPag)}`, { width: w, align: 'right' });
-  }
+  // ---- Emitente ----
+  texto(emit.xNome || '', { negrito: true, centro: true });
+  texto(`CNPJ: ${documento(emit.CNPJ || emit.CPF)}  IE: ${emit.IE || ''}`, { centro: true });
+  texto([`${ender.xLgr || ''}, ${ender.nro || ''}`, ender.xCpl, ender.xBairro].filter(Boolean).join(' - '), { centro: true });
+  texto(`${ender.xMun || ''}/${ender.UF || ''}${ender.fone ? `  Fone: ${telefone(ender.fone)}` : ''}`, { centro: true });
+  tracos();
+  texto('DOCUMENTO AUXILIAR DA NOTA FISCAL DE CONSUMIDOR ELETRÔNICA', { negrito: true, centro: true });
+  if (opcoes.homologacao) texto('EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO - SEM VALOR FISCAL', { negrito: true, centro: true, cor: '#d92d20' });
+  if (String(ide.tpEmis) === '9') texto('EMITIDA EM CONTINGÊNCIA', { negrito: true, centro: true });
+  tracos();
 
-  // Lei 12.741/2012 e reforma tributária
-  if (Number(tot.vTotTrib) > 0) {
-    pdf.fontSize(5.5).text(`Tributos totais incidentes (Lei 12.741/2012): R$ ${moeda(tot.vTotTrib)}`, { width: w, align: 'right' });
+  // ---- Itens: as colunas da direita têm largura fixa, código e descrição cortam no que sobra ----
+  const direita = (qtd: string, un: string, unit: string, total: string) =>
+    `${qtd.padStart(7)} ${un.slice(0, 4).padEnd(4)}${unit.padStart(9)}${total.padStart(10)}`;
+  linha('CODIGO DESCRICAO', direita('QTDE', 'UN', 'UNIT', 'TOTAL'));
+  for (const det of itens) {
+    const p = det.prod || {};
+    const unit = Number(p.vUnCom ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    linha(`${p.cProd || ''} ${p.xProd || ''}`, direita(moeda(p.qCom, 3), String(p.uCom || ''), unit, moeda(p.vProd)));
   }
+  tracos();
+
+  // ---- Totais e pagamento ----
+  linha('QTD. TOTAL DE ITENS', String(itens.length));
+  linha('VALOR TOTAL R$', moeda(tot.vProd), true);
+  const acrescimos = Number(tot.vOutro || 0) + Number(tot.vFrete || 0) + Number(tot.vSeg || 0);
+  if (Number(tot.vDesc) > 0) linha('DESCONTO R$', moeda(tot.vDesc));
+  if (acrescimos > 0) linha('ACRÉSCIMO R$', moeda(acrescimos));
+  if (Math.abs(Number(tot.vNF || 0) - Number(tot.vProd || 0)) >= 0.005) linha('VALOR A PAGAR R$', moeda(tot.vNF), true);
+  linha('FORMA DE PAGAMENTO', 'VALOR PAGO R$');
+  for (const pg of comoLista<any>(inf.pag?.detPag)) {
+    const tPag = String(pg.tPag || '').padStart(2, '0');
+    linha((tPag === '99' && pg.xPag ? pg.xPag : FORMAS_PAGAMENTO[tPag] ?? tPag).toUpperCase(), moeda(pg.vPag));
+  }
+  if (Number(inf.pag?.vTroco) > 0) linha('TROCO R$', moeda(inf.pag.vTroco));
+  tracos();
+
+  // ---- Consulta ----
+  texto('Consulte pela Chave de Acesso em', { centro: true });
+  texto(valorTag(xml, 'urlChave'), { centro: true });
+  texto(chaveFormatada(chave), { negrito: true, centro: true });
+  tracos();
+
+  // ---- QR-Code à esquerda; consumidor, número e protocolo à direita ----
+  const lado = 28 * MM;
+  const topo = y + 2;
+  if (imagem) pdf.image(imagem, esq, topo, { width: lado });
+  const dest = inf.dest;
+  const docDest = dest?.CPF ? `CPF: ${documento(dest.CPF)}` : dest?.CNPJ ? `CNPJ: ${documento(dest.CNPJ)}` : dest?.idEstrangeiro ? `ID: ${dest.idEstrangeiro}` : '';
+  const aoLado: [string, boolean?][] = [
+    [docDest ? `CONSUMIDOR ${docDest}` : 'CONSUMIDOR NÃO IDENTIFICADO', true],
+    ...(dest?.xNome ? [[String(dest.xNome)] as [string]] : []),
+    [`Número: ${String(ide.nNF || '').padStart(6, '0')}  Série: ${String(ide.serie || '').padStart(3, '0')}`],
+    [`Emissão: ${paraBR(ide.dhEmi)}`],
+    ...(protocolo
+      ? ([['Protocolo de autorização:'], [protocolo], [`Data de autorização: ${paraBR(valorTag(xml, 'dhRecbto'))}`]] as [string][])
+      : ([[String(ide.tpEmis) === '9' ? 'Pendente de autorização' : 'NÃO AUTORIZADA', true]] as [string, boolean][])),
+  ];
+  const xDir = esq + (imagem ? lado + 2 * MM : 0);
+  let yDir = topo;
+  for (const [s, negrito] of aoLado) {
+    fonte(negrito);
+    escrever(s, xDir, yDir, esq + w - xDir);
+    yDir = pdf.y;
+  }
+  y = Math.max(imagem ? topo + lado : topo, yDir) + 2;
+  tracos();
+
+  // ---- Tributos (Lei 12.741/2012 e reforma tributária) e mensagens do contribuinte ----
+  if (Number(tot.vTotTrib) > 0) texto(`Trib. Aprox. R$: ${moeda(tot.vTotTrib)} (Lei Federal 12.741/2012)`);
   const monofasico = Number(tot.vICMSMono || 0) + Number(tot.vICMSMonoReten || 0);
   const retidoAntes = Number(tot.vICMSMonoRet || 0);
   if (monofasico || retidoAntes) {
-    pdf.fontSize(5.5).text(
-      `ICMS monofásico R$ ${moeda(monofasico)}` +
-        (retidoAntes ? `   retido anteriormente R$ ${moeda(retidoAntes)}` : ''),
-      { width: w, align: 'right' },
-    );
+    texto(`ICMS monofásico R$ ${moeda(monofasico)}${retidoAntes ? `  retido anteriormente R$ ${moeda(retidoAntes)}` : ''}`);
   }
   const ibscbs = inf.total?.IBSCBSTot;
-  if (ibscbs) {
-    pdf.fontSize(5.5).text(
-      `IBS R$ ${moeda(ibscbs.gIBS?.vIBS)}   CBS R$ ${moeda(ibscbs.gCBS?.vCBS)}`,
-      { width: w, align: 'right' },
-    );
+  if (ibscbs) texto(`IBS R$ ${moeda(ibscbs.gIBS?.vIBS)}  CBS R$ ${moeda(ibscbs.gCBS?.vCBS)}`);
+  const complemento = [inf.infAdic?.infAdFisco, inf.infAdic?.infCpl].filter(Boolean).join(' | ');
+  if (complemento) texto(complemento);
+
+  // ---- Rodapé do caixa (o PDV manda operador, caixa e versão) ----
+  const r = opcoes.rodape;
+  if (r) {
+    tracos();
+    const tres = (v: unknown) => String(v ?? '').padStart(3, '0');
+    linha(`Operador: ${r.operador ?? ''}`, `Emp.: ${tres(r.empresa)} PDV: ${tres(r.caixa)}`);
+    if (r.versao) linha('', r.versao);
   }
 
-  pdf.moveDown(0.4);
-  pdf.fontSize(5.5).font('Helvetica').text(`Consulte pela chave de acesso em ${valorTag(xml, 'urlChave')}`, centro);
-  pdf.fontSize(6).text(chaveFormatada(chave), centro);
-
-  const qr = valorTag(xml, 'qrCode');
-  if (qr) {
-    try {
-      const imagem = await qrcode(qr);
-      // O texto seguinte começa abaixo da imagem (moveDown dependia do tamanho da fonte e ficava curto)
-      const topo = pdf.y + 4;
-      pdf.image(imagem, (largura - 30 * MM) / 2, topo, { width: 30 * MM });
-      pdf.x = pdf.page.margins.left;
-      pdf.y = topo + 30 * MM + 4;
-    } catch {
-      /* sem QR-Code o cupom ainda sai, só perde a consulta pelo celular */
-    }
-  }
-
-  const protocolo = valorTag(xml, 'nProt');
-  pdf.fontSize(5.5).text(
-    protocolo ? `Protocolo de autorização: ${protocolo} — ${paraBR(valorTag(xml, 'dhRecbto'))}` : 'NÃO AUTORIZADA',
-    centro,
-  );
-
-  if (opcoes.homologacao) {
-    pdf.moveDown(0.3);
-    pdf.fontSize(7).fillColor('#d92d20').font('Helvetica-Bold').text('EMITIDA EM HOMOLOGAÇÃO - SEM VALOR FISCAL', centro);
-  }
-
-  pdf.end();
-  return pronto;
+  return y;
 }

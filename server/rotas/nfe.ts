@@ -558,7 +558,12 @@ export function criarRotasNFe(): Router {
     }
     if (!xml) throw new Error('Nenhum XML encontrado para gerar o DANFE.');
 
-    const pdf = await gerarDanfe(xml, await opcoesDanfe(config, xml, empresaId));
+    // Rodapé do cupom: só o PDV manda (operador, caixa, versão)
+    const r = req.body?.rodape;
+    const rodape = r && typeof r === 'object'
+      ? { operador: String(r.operador ?? '').slice(0, 30), caixa: String(r.caixa ?? '').slice(0, 6), versao: String(r.versao ?? '').slice(0, 30), empresa: empresaId }
+      : undefined;
+    const pdf = await gerarDanfe(xml, { ...(await opcoesDanfe(config, xml, empresaId)), rodape });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="DANFE-${req.body?.chave || 'nfe'}.pdf"`);
