@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { pool, checkDbHealth, CONFIG_FALTANDO, MENSAGEM_CONFIG_FALTANDO } from './db.js';
 import { criarRotasNFe } from './rotas/nfe.js';
-import { criarRotasEmitir } from './rotas/emitir.js';
+import { criarRotasEmitir, transmitirContingenciaDeTodas } from './rotas/emitir.js';
 import { carregarCertificado } from './nfe/contexto.js';
 import { lerConfig } from './config.js';
 import { criarToken, exigirSessao } from './auth.js';
@@ -122,6 +122,20 @@ export function createApp() {
       // O token é a credencial das próximas chamadas: é dele que sai a empresa
       const token = criarToken(Number(encontrado.id), Number(empresa.id));
       res.json({ success: true, token, usuario: encontrado, empresa });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Transmissão autônoma das NFC-e em contingência (PAF-NFC-e, Requisito III, II). Chamada pelo agendador
+  // (Vercel Cron manda "Authorization: Bearer <CRON_SECRET>"); sem CRON_SECRET no .env a rota fica fechada
+  app.get('/api/cron/contingencia', async (req: Request, res: Response) => {
+    const segredo = process.env.CRON_SECRET || '';
+    if (segredo.length < 16 || req.headers.authorization !== `Bearer ${segredo}`) {
+      return res.status(401).json({ success: false, error: 'Não autorizado.' });
+    }
+    try {
+      res.json({ success: true, empresas: await transmitirContingenciaDeTodas() });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }

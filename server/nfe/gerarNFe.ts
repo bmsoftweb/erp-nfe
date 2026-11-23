@@ -333,6 +333,8 @@ export interface DocumentoNFe {
     indicadorIntermediador?: number;
     /** infIntermed (YB): CNPJ da plataforma e a identificação do vendedor nela */
     intermediador?: { cnpj: string; identificador: string };
+    /** NFref/refNFe: chaves (44 dígitos) das NF-e/NFC-e referenciadas (ex.: estorno, RICMS/SC Anexo 11, art. 106) */
+    referenciadas?: string[];
   };
   destinatario?: Destinatario;
   itens: ItemNFe[];
@@ -1181,11 +1183,13 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
     tag('indPres', doc.ide.presencial ?? (nfce ? 1 : 0)),
     tag('indIntermed', doc.ide.intermediador ? 1 : doc.ide.indicadorIntermediador),
     tag('procEmi', 0),
-    tag('verProc', limparTexto(doc.ide.versaoProcesso || 'BMNFe 0.1.0', 20)),
+    // Emitente de SC: o verProc é sempre o do PAF-NFC-e (Requisito IV, § 4º), venha a nota do caixa, das vendas ou da tela
+    tag('verProc', limparTexto(ctx.paf ? `${ctx.paf.nome} ${ctx.paf.versao}` : doc.ide.versaoProcesso || 'BMNFe 0.1.0', 20)),
     tipoEmissao !== 1 && doc.ide.dataContingencia
       ? tag('dhCont', dataHoraDFe(dataDoDocumento(doc.ide.dataContingencia))) +
         tag('xJust', limparTexto(doc.ide.justificativaContingencia || 'Sem comunicacao com a SEFAZ autorizadora', 256))
       : '',
+    ...(doc.ide.referenciadas || []).map((c) => grupoObrigatorio('NFref', tag('refNFe', String(c).replace(/\D/g, '')))),
   );
 
   // ----- emit -----
@@ -1464,7 +1468,11 @@ export function gerarNFe(ctx: Contexto, doc: DocumentoNFe): NFeGerada {
   const infAdic = grupo('infAdic',
     tag('infAdFisco', limparTexto(doc.informacoesAdicionais?.fisco || '', 2000)),
     tag('infCpl', limparTexto(doc.informacoesAdicionais?.contribuinte || '', 5000)),
-    (doc.informacoesAdicionais?.obsFisco || [])
+    [
+      // obsFisco "PAF" em todo DF-e do emitente de SC (Requisito IV, § 4º), se quem mandou a nota não pôs
+      ...(ctx.paf && !(doc.informacoesAdicionais?.obsFisco || []).some((o) => o.campo === 'PAF') ? [{ campo: 'PAF', texto: ctx.paf.nome }] : []),
+      ...(doc.informacoesAdicionais?.obsFisco || []),
+    ]
       .slice(0, 10)
       .map((o) => `<obsFisco xCampo="${escapar(limparTexto(o.campo, 20))}">${tag('xTexto', limparTexto(o.texto, 60))}</obsFisco>`)
       .join(''),

@@ -42,6 +42,30 @@ export interface Contexto {
   emitente: Emitente;
   certificado: CertificadoCarregado;
   modelo: ModeloDFe;
+  /** PAF-NFC-e de SC (Ato DIAT 54/2026): todo DF-e do emitente de SC sai identificado com ele, inclusive o da tela do BMNFe */
+  paf?: { nome: string; versao: string } | null;
+}
+
+/** Nome do PAF-NFC-e único do ERP (o mesmo PAF.nome do erp-pdv e do erp-vendas) */
+const NOME_PAF = 'BM-PDV';
+
+/**
+ * PAF-NFC-e do emitente de SC: o Anexo 11 do RICMS/SC (arts. 94, § 8º, e 95-B) quer NF-e e NFC-e do varejo
+ * saindo só pelo PAF, então a nota digitada na tela também leva o verProc e o obsFisco "PAF" (Requisito IV, § 4º).
+ * A versão vem da sys_paf (extras/2026-11-23_sys_paf_versao.sql do erp-pdv); sem a tabela, fica sem PAF.
+ */
+async function pafDo(emitente: Emitente) {
+  if (String(emitente.uf).toUpperCase() !== 'SC') return null;
+  // Só a falta da tabela é "sem PAF"; outro erro do banco não pode desligar as proteções do PAF
+  let semTabela = false;
+  const [[p]] = await pool.query<any[]>('SELECT versao FROM sys_paf WHERE id = 1').catch((e) => {
+    if (e?.code === 'ER_NO_SUCH_TABLE') { semTabela = true; return [[]] as any; }
+    throw e;
+  });
+  if (semTabela) return null;
+  // Tabela criada sem a linha (ou sem versão): erro, para o PAF não ser desligado em silêncio
+  if (!String(p?.versao ?? '').trim()) throw new Error('PAF-NFC-e: a tabela sys_paf existe, mas sem a versão (linha id = 1). Grave a versão do PAF antes de emitir.');
+  return { nome: NOME_PAF, versao: String(p.versao).trim() };
 }
 
 /** Cache pela data de atualização: um certificado novo gravado no BM-Master vale na próxima operação */
@@ -90,6 +114,7 @@ export async function montarContexto(empresaId: number): Promise<Contexto> {
     emitente,
     certificado,
     modelo: config.geral.modeloDF === '65' ? 'NFCe' : 'NFe',
+    paf: await pafDo(emitente),
   };
 }
 

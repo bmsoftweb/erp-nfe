@@ -163,6 +163,8 @@ export interface Retorno {
 export interface DocumentoLista {
   id: number;
   chave: string;
+  /** Referência do módulo que emitiu pelo concentrador (PDV-…, VENDA-…) */
+  referencia: string | null;
   modelo: string;
   serie: number;
   numero: number;

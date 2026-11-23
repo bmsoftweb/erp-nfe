@@ -29,7 +29,7 @@ function p2(n: number) {
  * chave); num servidor em UTC fica meia-noite. Aqui:
  *   - vazio                   -> agora
  *   - "2026-09-20"            -> esse dia, na hora atual de Brasília
- *   - "2026-09-20T14:30[:05]" -> essa hora, já em Brasília
+ *   - "2026-09-20T14:30[:05]" -> essa hora, já em Brasília (também com espaço no lugar do T, o formato do MySQL)
  *   - com fuso ("...-03:00", "...Z") -> o instante, convertido para Brasília
  */
 export function dataDoDocumento(texto?: string | null): Date {
@@ -44,7 +44,7 @@ export function dataDoDocumento(texto?: string | null): Date {
     );
   }
 
-  const semFuso = String(texto).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  const semFuso = String(texto).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/);
   if (semFuso) {
     return new Date(
       Number(semFuso[1]), Number(semFuso[2]) - 1, Number(semFuso[3]),

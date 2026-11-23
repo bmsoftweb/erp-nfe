@@ -11,5 +11,11 @@
       "includeFiles": "{recursos/**,node_modules/xmllint-wasm/**}",
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/contingencia",
+      "schedule": "*/15 * * * *"
+    }
+  ]
 }

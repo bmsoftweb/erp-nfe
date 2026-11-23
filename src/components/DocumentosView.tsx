@@ -78,9 +78,22 @@ export const DocumentosView: React.FC<{
     [],
   );
 
+  /** NFC-e de contingência recusada: não se reenvia igual, gera de novo com o mesmo número e data */
+  const contingenciaRecusada = (d: DocumentoLista) => d.situacao === 'rejeitada' && d.chave?.[34] === '9' && !!d.referencia;
+
   const transmitir = async (doc: DocumentoLista) => {
     setConfirmandoEnvio(null);
-    await executar(() => api.enviarNFe({ chave: doc.chave }));
+    if (contingenciaRecusada(doc)) {
+      try {
+        const r = await api.regerarContingencia(doc.referencia!);
+        if (r.situacao === 'rejeitada') setAlerta(`A SEFAZ recusou de novo: ${r.cStat ?? ''} ${r.motivo ?? ''}`);
+        else setAviso(`NFC-e ${doc.numero} gerada de novo (${r.situacao}). Reimprima o DANFE.`);
+      } catch (err: any) {
+        setErro(err.message);
+      }
+    } else {
+      await executar(() => api.enviarNFe({ chave: doc.chave }));
+    }
     carregar();
     onRecarregarPainel();
   };
@@ -242,7 +255,8 @@ export const DocumentosView: React.FC<{
           <>
             <AcaoGrade
               nome="Transmitir para a SEFAZ"
-              titulo={podeTransmitir(d) ? 'Transmitir para a SEFAZ' : 'Só nota assinada ou rejeitada pode ser transmitida'}
+              titulo={contingenciaRecusada(d) ? 'Gerar de novo a NFC-e de contingência recusada (mesmo número e data) e transmitir'
+                : podeTransmitir(d) ? 'Transmitir para a SEFAZ' : 'Só nota assinada ou rejeitada pode ser transmitida'}
               icone={<Send className="w-3.5 h-3.5" />}
               tom="verde"
               onClick={() => setConfirmandoEnvio(d)}

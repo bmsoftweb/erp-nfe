@@ -56,6 +56,18 @@ function exigirEditavel(situacao: string) {
 }
 
 /**
+ * Emitente do PAF-NFC-e de SC: DF-e só pelo PAF (erp-pdv e erp-vendas, pelo /api/emitir), que escolhe o modelo e
+ * usa a Tabela de Mercadorias e os intermediadores (Requisitos IV, VIII e XI; RICMS/SC Anexo 11, art. 94, § 8º).
+ * A tela daqui não gera, não transmite XML de fora nem importa nota deste emitente.
+ */
+function exigirForaDoPaf(paf: unknown) {
+  if (paf) {
+    throw new Error('Este emitente usa o PAF-NFC-e de SC: a NF-e/NFC-e é emitida pelo erp-pdv ou pelo erp-vendas ' +
+      '(vendas, devoluções e remessas pelas naturezas de operação). Aqui ficam consulta, eventos, inutilização e DANFE.');
+  }
+}
+
+/**
  * A empresa vem da sessão validada pelo exigirSessao — nunca de um header, que o
  * cliente poderia trocar para agir em nome de outro emitente.
  */
@@ -190,6 +202,18 @@ export function criarRotasNFe(): Router {
           WHERE empresa_id = ? AND chave = ?`,
         [ret.dados.protocolo, ret.cStat, ret.xMotivo, ret.cStat, ret.cStat, ctx.empresaId, req.body.chave],
       );
+      // Autorizada: grava o nfeProc; NFC-e de contingência gerada de novo (art. 104, § 4º, III) fica para reimprimir
+      if ([100, 150].includes(ret.cStat) && ret.dados.protNFe) {
+        const [[d]] = await pool.query<any[]>('SELECT id, xml FROM nfe_documentos WHERE empresa_id = ? AND chave = ? LIMIT 1',
+          [ctx.empresaId, req.body.chave]);
+        if (d?.xml) {
+          await pool.query(
+            `UPDATE nfe_documentos SET xml_protocolo = ?,
+                    dados = IF(JSON_UNQUOTE(JSON_EXTRACT(dados, '$.regerada')) = 'true', JSON_SET(dados, '$.reimprimir', CAST('true' AS JSON)), dados) WHERE id = ?`,
+            [montarProcNFe(d.xml, ret.dados.protNFe), d.id],
+          );
+        }
+      }
     }
 
     res.json(ret);
@@ -228,6 +252,7 @@ export function criarRotasNFe(): Router {
   r.post('/gerar', rota(async (req, res) => {
     const empresaId = empresaDaRequisicao(req);
     const ctx = await montarContexto(empresaId);
+    exigirForaDoPaf(ctx.paf);
     const documento = req.body?.documento;
     if (!documento) throw new Error('Informe os dados da nota.');
 
@@ -319,12 +344,15 @@ export function criarRotasNFe(): Router {
     const ctx = await montarContexto(empresaId);
 
     let xml: string = req.body?.xml || '';
+    if (xml) exigirForaDoPaf(ctx.paf);
     if (!xml && req.body?.chave) {
       const [linhas] = await pool.query<any[]>(
         'SELECT xml FROM nfe_documentos WHERE empresa_id = ? AND chave = ? LIMIT 1',
         [empresaId, req.body.chave],
       );
       xml = linhas[0]?.xml || '';
+      // A de contingência recusada é gerada de novo (/emitir/:referencia/regerar), não reenviada igual
+      if (String(req.body.chave)[34] === '9') throw new Error('NFC-e de contingência recusada: use "Gerar de novo" (mesmo número e data, art. 104, § 4º).');
     }
     if (!xml) throw new Error('Informe o XML da NF-e ou a chave de um documento já gerado.');
 
@@ -357,6 +385,7 @@ export function criarRotasNFe(): Router {
   /** Importa um XML de fora (o "Importar TXT/XML" do exemplo) */
   r.post('/importar', rota(async (req, res) => {
     const empresaId = empresaDaRequisicao(req);
+    exigirForaDoPaf((await montarContexto(empresaId)).paf);
     const xml: string = req.body?.xml || '';
     const chave = (xml.match(/Id="NFe(\d{44})"/) || [])[1];
     if (!chave) throw new Error('O arquivo não contém uma NF-e com chave de acesso.');
@@ -435,7 +464,9 @@ export function criarRotasNFe(): Router {
         'SELECT situacao FROM nfe_documentos WHERE empresa_id = ? AND chave = ? LIMIT 1',
         [empresaId, String(req.body?.chave || '').replace(/\D/g, '')],
       );
-      if (doc?.situacao === 'contingencia') {
+      // Chave tpEmis 9 (posição 35) só cancela autorizada, esteja ou não no banco desta empresa (Req. III, III)
+      const chaveCanc = String(req.body?.chave || '').replace(/\D/g, '');
+      if (doc?.situacao === 'contingencia' || (chaveCanc[34] === '9' && doc?.situacao !== 'autorizada')) {
         throw new Error('Esta NFC-e foi emitida em contingência e ainda não foi autorizada. O cancelamento só é possível depois da autorização.');
       }
     }
@@ -473,13 +504,25 @@ export function criarRotasNFe(): Router {
     const empresaId = empresaDaRequisicao(req);
     const ctx = await montarContexto(empresaId);
     const p = {
-      ano: Number(req.body?.ano) || new Date().getFullYear(),
+      ano: Number(req.body?.ano) || Number(dataHoraMysql().slice(0, 4)),
       modelo: String(req.body?.modelo || ctx.config.geral.modeloDF),
       serie: Number(req.body?.serie) || 1,
       numeroInicial: Number(req.body?.numeroInicial),
       numeroFinal: Number(req.body?.numeroFinal),
       justificativa: String(req.body?.justificativa || ''),
     };
+    // NFC-e emitida em contingência não pode ter o número inutilizado (RICMS/SC Anexo 11, art. 104, § 5º, II;
+    // Requisito III, III do PAF-NFC-e): o DANFE já está com o consumidor
+    const [[cont]] = await pool.query<any[]>(
+      `SELECT numero FROM nfe_documentos
+        WHERE empresa_id = ? AND modelo = ? AND serie = ? AND ambiente = ? AND numero BETWEEN ? AND ?
+          AND SUBSTRING(chave, 35, 1) = '9' LIMIT 1`,
+      [empresaId, p.modelo, p.serie, ctx.config.webservice.ambiente, p.numeroInicial, p.numeroFinal],
+    );
+    if (cont) {
+      throw new Error(`O número ${cont.numero} é de uma NFC-e emitida em contingência: não pode ser inutilizado. ` +
+        'Se ela foi recusada, gere de novo com o mesmo número (art. 104, § 4º, do Anexo 11).');
+    }
 
     const ret = await inutilizar(ctx, p);
 
@@ -563,7 +606,9 @@ export function criarRotasNFe(): Router {
     const rodape = r && typeof r === 'object'
       ? { operador: String(r.operador ?? '').slice(0, 30), caixa: String(r.caixa ?? '').slice(0, 6), versao: String(r.versao ?? '').slice(0, 30), empresa: empresaId }
       : undefined;
-    const pdf = await gerarDanfe(xml, { ...(await opcoesDanfe(config, xml, empresaId)), rodape });
+    // NFC-e de contingência sai em 2 vias (Anexo 11, art. 104, § 6º): a 2ª chamada manda via = 'estabelecimento'
+    const via = String(req.body?.via ?? req.query.via ?? '') === 'estabelecimento' ? 'estabelecimento' as const : undefined;
+    const pdf = await gerarDanfe(xml, { ...(await opcoesDanfe(config, xml, empresaId)), rodape, via });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="DANFE-${req.body?.chave || 'nfe'}.pdf"`);
@@ -673,7 +718,7 @@ export function criarRotasNFe(): Router {
   r.get('/documentos', paginada({
     tabela: 'nfe_documentos',
     colunas:
-      'id, chave, modelo, serie, numero, situacao, ambiente, data_emissao, destinatario_nome, valor_total, protocolo, codigo_status, motivo, ' +
+      'id, chave, referencia, modelo, serie, numero, situacao, ambiente, data_emissao, destinatario_nome, valor_total, protocolo, codigo_status, motivo, ' +
       // Só nota gerada aqui guarda os dados do formulário; XML importado não tem o que copiar
       '(dados IS NOT NULL) AS copiavel',
     ordenaveis: {

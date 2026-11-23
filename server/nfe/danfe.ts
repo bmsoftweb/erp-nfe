@@ -91,6 +91,8 @@ export interface OpcoesDanfe {
   formato?: number;
   /** NFC-e: rodapé do caixa (o erp-pdv manda operador, número do caixa e versão) */
   rodape?: { operador?: string; empresa?: number | string; caixa?: number | string; versao?: string };
+  /** NFC-e: 'estabelecimento' imprime a marca da 2ª via da contingência (RICMS/SC Anexo 11, art. 104, § 6º) */
+  via?: 'estabelecimento';
 }
 
 /**
@@ -814,7 +816,13 @@ function desenharBobina(pdf: PDFKit.PDFDocument, inf: any, chave: string, xml: s
   tracos();
   texto('DOCUMENTO AUXILIAR DA NOTA FISCAL DE CONSUMIDOR ELETRÔNICA', { negrito: true, centro: true });
   if (opcoes.homologacao) texto('EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO - SEM VALOR FISCAL', { negrito: true, centro: true, cor: '#d92d20' });
-  if (String(ide.tpEmis) === '9') texto('EMITIDA EM CONTINGÊNCIA', { negrito: true, centro: true });
+  if (String(ide.tpEmis) === '9') {
+    texto('EMITIDA EM CONTINGÊNCIA', { negrito: true, centro: true });
+    // Data e hora (com segundos) da entrada em contingência impressas (RICMS/SC Anexo 11, art. 104, § 3º, "b")
+    const c = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2}:\d{2})/.exec(String(ide.dhCont || ''));
+    if (c) texto(`Entrada em contingência: ${c[3]}/${c[2]}/${c[1]} ${c[4]}`, { centro: true });
+  }
+  if (opcoes.via === 'estabelecimento') texto('VIA DO ESTABELECIMENTO', { negrito: true, centro: true });
   tracos();
 
   // ---- Itens: as colunas da direita têm largura fixa, código e descrição cortam no que sobra ----

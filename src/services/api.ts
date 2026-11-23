@@ -105,6 +105,10 @@ export const gerarNFe = (documento: any, documentoId?: number) =>
 export const enviarNFe = (dados: { chave?: string; xml?: string; sincrono?: boolean }) =>
   post<Retorno>('/enviar', dados);
 
+/** NFC-e de contingência recusada: gera de novo com o mesmo número e data e transmite (Anexo 11, art. 104, § 4º) */
+export const regerarContingencia = (referencia: string) =>
+  post<any>(`/emitir/${encodeURIComponent(referencia)}/regerar`, {});
+
 export const importarXml = (xml: string) => post<{ success: boolean; chave: string }>('/importar', { xml });
 
 export const validarAssinatura = (xml: string) =>
